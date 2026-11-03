@@ -1,0 +1,9 @@
+.tools/
+upstream/
+go-releases.json
+data/
+panel/bin/
+*.exe
+*.test
+*.log
+.env
