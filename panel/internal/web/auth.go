@@ -1,9 +1,14 @@
 package web
 
 import (
+	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"gonutspanel/internal/auth"
+	"gonutspanel/internal/store"
 )
 
 // oauthState holds the PKCE verifier for one in-flight sign-in.
@@ -12,7 +17,9 @@ type oauthState struct {
 	expires  time.Time
 }
 
-// oauthStates is the short-lived server-side store for OAuth state values.
+// oauthStates is the short-lived server-side store for OAuth state values. The
+// verifier is kept here, never in a cookie: the browser only carries the opaque
+// state, so a stolen cookie cannot bypass PKCE.
 type oauthStates struct {
 	mu sync.Mutex
 	m  map[string]oauthState
@@ -37,9 +44,142 @@ func (o *oauthStates) take(state string) (string, bool) {
 	return v.verifier, true
 }
 
-// The Discord sign-in handlers are implemented in Task 8.
+// oauthStateTTL is how long an authorize redirect may be answered.
+const oauthStateTTL = 10 * time.Minute
 
-func (s *Server) authLogin(w http.ResponseWriter, r *http.Request)    { notImplemented(w) }
-func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) { notImplemented(w) }
-func (s *Server) authLogout(w http.ResponseWriter, r *http.Request)   { notImplemented(w) }
-func (s *Server) authDev(w http.ResponseWriter, r *http.Request)      { notImplemented(w) }
+// authLogin starts the Discord authorization-code flow with PKCE. The verifier
+// is kept server-side and the state is bound to a short-lived cookie.
+func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
+	if s.Discord == nil {
+		http.Error(w, "sign-in unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	state, err := auth.RandomToken(24)
+	if err != nil {
+		http.Error(w, "sign-in unavailable", http.StatusInternalServerError)
+		return
+	}
+	verifier, err := auth.NewVerifier()
+	if err != nil {
+		http.Error(w, "sign-in unavailable", http.StatusInternalServerError)
+		return
+	}
+	s.States.put(state, verifier, oauthStateTTL)
+	auth.SetOAuthCookie(w, state, s.Cfg.CookieSecure)
+	http.Redirect(w, r, s.Discord.AuthorizeURLFor(state, auth.Challenge(verifier)), http.StatusFound)
+}
+
+// authCallback completes the Discord flow: it validates the state against the
+// cookie and the server-side verifier store, exchanges the code, checks the
+// optional allowlist, and creates a browser session. The OAuth cookie is
+// cleared on every outcome.
+func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
+	queryState := r.URL.Query().Get("state")
+	c, cookieErr := r.Cookie(auth.OAuthCookie)
+	cookieState := ""
+	if cookieErr == nil {
+		cookieState = c.Value
+	}
+	auth.ClearOAuthCookie(w, s.Cfg.CookieSecure)
+
+	// Empty values are rejected explicitly: auth.Equal("", "") is true.
+	if cookieErr != nil || cookieState == "" || queryState == "" ||
+		!auth.Equal(cookieState, queryState) {
+		http.Error(w, "invalid sign-in state", http.StatusBadRequest)
+		return
+	}
+	verifier, ok := s.States.take(cookieState)
+	if !ok {
+		http.Error(w, "sign-in expired", http.StatusBadRequest)
+		return
+	}
+	if r.URL.Query().Get("error") != "" {
+		http.Error(w, "Discord sign-in was cancelled", http.StatusBadRequest)
+		return
+	}
+	if s.Discord == nil {
+		http.Error(w, "sign-in unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	token, err := s.Discord.Exchange(r.Context(), r.URL.Query().Get("code"), verifier)
+	if err != nil {
+		// The error may quote Discord's response; only a fixed line is logged.
+		log.Printf("oauth exchange failed")
+		http.Error(w, "sign-in failed", http.StatusBadGateway)
+		return
+	}
+	du, err := s.Discord.Me(r.Context(), token)
+	if err != nil {
+		log.Printf("oauth user failed")
+		http.Error(w, "sign-in failed", http.StatusBadGateway)
+		return
+	}
+	if du.ID == "" {
+		http.Error(w, "sign-in failed", http.StatusBadGateway)
+		return
+	}
+	if len(s.Cfg.AllowedDiscordIDs) > 0 && !s.Cfg.AllowedDiscordIDs[du.ID] {
+		http.Error(w, "this Discord account is not allowed", http.StatusForbidden)
+		return
+	}
+	if err := s.Store.UpsertUser(store.User{
+		ID:         du.ID,
+		Username:   du.Username,
+		GlobalName: du.GlobalName,
+		Avatar:     du.Avatar,
+		CreatedAt:  time.Now().UnixMilli(),
+	}); err != nil {
+		http.Error(w, "sign-in failed", http.StatusInternalServerError)
+		return
+	}
+	sessToken, _, err := s.Store.CreateSession(du.ID, time.Now())
+	if err != nil {
+		http.Error(w, "sign-in failed", http.StatusInternalServerError)
+		return
+	}
+	auth.SetSessionCookie(w, sessToken, s.Cfg.CookieSecure)
+	http.Redirect(w, r, "/dashboard", http.StatusFound)
+}
+
+// authDev creates a local test session. It is disabled unless GONUTS_DEV_LOGIN
+// is set and never touches Discord.
+func (s *Server) authDev(w http.ResponseWriter, r *http.Request) {
+	if !s.Cfg.DevLogin {
+		http.NotFound(w, r)
+		return
+	}
+	id := "dev"
+	if q := strings.TrimSpace(r.URL.Query().Get("user")); q != "" {
+		id = "dev-" + strings.Map(func(r rune) rune {
+			if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, strings.ToLower(q))
+	}
+	if err := s.Store.UpsertUser(store.User{
+		ID:         id,
+		Username:   id,
+		GlobalName: id,
+		CreatedAt:  time.Now().UnixMilli(),
+	}); err != nil {
+		http.Error(w, "dev sign-in failed", http.StatusInternalServerError)
+		return
+	}
+	token, _, err := s.Store.CreateSession(id, time.Now())
+	if err != nil {
+		http.Error(w, "dev sign-in failed", http.StatusInternalServerError)
+		return
+	}
+	auth.SetSessionCookie(w, token, s.Cfg.CookieSecure)
+	http.Redirect(w, r, "/dashboard", http.StatusFound)
+}
+
+// authLogout drops the current session and clears the cookie.
+func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
+	if token := auth.CookieToken(r); token != "" {
+		_ = s.Store.DeleteSession(token)
+	}
+	auth.ClearSessionCookie(w, s.Cfg.CookieSecure)
+	http.Redirect(w, r, "/dashboard", http.StatusFound)
+}

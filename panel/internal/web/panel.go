@@ -213,6 +213,9 @@ func (s *Server) panelPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
 		return
 	}
+	if !s.panelLimit(w, r) {
+		return
+	}
 	inst, ok := s.panelInstallation(w, r, sess.DiscordID)
 	if !ok {
 		return
@@ -263,6 +266,9 @@ func (s *Server) panelGet(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.panelSession(r)
 	if !ok {
 		http.NotFound(w, r)
+		return
+	}
+	if !s.panelLimit(w, r) {
 		return
 	}
 	inst, ok := s.panelInstallation(w, r, sess.DiscordID)
@@ -316,6 +322,9 @@ func (s *Server) panelPost(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, ok := s.panelMutation(w, r)
 	if !ok {
+		return
+	}
+	if !s.panelLimit(w, r) {
 		return
 	}
 	inst, ok := s.panelInstallation(w, r, sess.DiscordID)

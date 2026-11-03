@@ -1,13 +1,16 @@
 package web
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,11 +34,10 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 
 func TestPairingRedeemAndCheck(t *testing.T) {
 	s, st := newTestServer(t)
-	token, csrf, err := st.CreateSession("u1", time.Now())
-	if err != nil {
+	if err := st.UpsertUser(store.User{ID: "u1", Username: "u1"}); err != nil {
 		t.Fatal(err)
 	}
-	code, _, err := st.CreateCode("u1", time.Now())
+	token, csrf, err := st.CreateSession("u1", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,19 +53,32 @@ func TestPairingRedeemAndCheck(t *testing.T) {
 		return rec
 	}
 
-	// apiPairCode belongs to a later task; the stubbed route must be honest
-	// about it rather than silently succeeding.
-	if rec := mutate("/dashboard/api/pair/code", ""); rec.Code != http.StatusNotImplemented {
+	// Pair-code creation is a dashboard mutation now.
+	rec := mutate("/dashboard/api/pair/code", "")
+	if rec.Code != http.StatusOK {
 		t.Fatalf("pair code status=%d body=%s", rec.Code, rec.Body)
 	}
+	var created struct {
+		Code      string `json:"code"`
+		ExpiresAt int64  `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Code == "" || created.ExpiresAt <= time.Now().UnixMilli() {
+		t.Fatalf("pair code=%+v", created)
+	}
 
-	redeemBody := `{"code":"` + code + `","protocols":[1],"name":"Bot","build":"b","hive":"","capabilities":["panel"]}`
+	redeemBody := `{"code":"` + created.Code + `","protocols":[1],"name":"Bot","build":"b","hive":"","capabilities":["panel"]}`
 	req := httptest.NewRequest("POST", "/dashboard/api/pair/redeem", strings.NewReader(redeemBody))
 	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
+	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("redeem status=%d body=%s", rec.Code, rec.Body)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("redeem cache-control=%q", rec.Header().Get("Cache-Control"))
 	}
 	var pair struct {
 		InstallationID int64  `json:"installationId"`
@@ -97,6 +112,9 @@ func TestPairingRedeemAndCheck(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ok":true`) ||
 		!strings.Contains(rec.Body.String(), `"installationId":1`) {
 		t.Fatalf("check status=%d body=%s", rec.Code, rec.Body)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("check cache-control=%q", rec.Header().Get("Cache-Control"))
 	}
 	checkResponse := rec.Body.String()
 
@@ -213,7 +231,7 @@ func TestClientCheckRejectsMissingOrUnknownCredential(t *testing.T) {
 	}
 }
 
-func TestDeferredHandlersAnswer501(t *testing.T) {
+func TestHandlersNoLongerAnswer501(t *testing.T) {
 	s, _ := newTestServer(t)
 	cases := []struct{ method, path string }{
 		{"GET", "/dashboard"},
@@ -232,10 +250,10 @@ func TestDeferredHandlersAnswer501(t *testing.T) {
 		req := httptest.NewRequest(c.method, c.path, strings.NewReader("{}"))
 		rec := httptest.NewRecorder()
 		s.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotImplemented {
-			t.Fatalf("%s %s status=%d body=%s", c.method, c.path, rec.Code, rec.Body)
+		if rec.Code == http.StatusNotImplemented {
+			t.Fatalf("%s %s is still stubbed", c.method, c.path)
 		}
-		if strings.Contains(rec.Body.String(), "credentialHash") {
+		if strings.Contains(strings.ToLower(rec.Body.String()), "credentialhash") {
 			t.Fatalf("%s %s leaked credentialHash", c.method, c.path)
 		}
 	}
@@ -411,6 +429,7 @@ type fakeRelay struct {
 	online   bool
 	frames   []map[string]any
 	commands []string
+	closed   []int64
 	updates  chan struct{}
 	panel    func(context.Context, int64, map[string]any) (*relay.PanelResult, error)
 }
@@ -418,6 +437,9 @@ type fakeRelay struct {
 func (f *fakeRelay) Online(int64) bool { return f.online }
 
 func (f *fakeRelay) SendCommand(_ int64, c string) (string, error) {
+	if !f.online {
+		return "", relay.ErrOffline
+	}
 	f.commands = append(f.commands, c)
 	return "cmd_test", nil
 }
@@ -430,9 +452,9 @@ func (f *fakeRelay) PanelRequest(ctx context.Context, id int64, frame map[string
 	return f.panel(ctx, id, frame)
 }
 
-func (f *fakeRelay) CloseInstallation(int64, int, string)       {}
-func (f *fakeRelay) Updates() <-chan struct{}                   { return f.updates }
-func (f *fakeRelay) ServeWS(http.ResponseWriter, *http.Request) {}
+func (f *fakeRelay) CloseInstallation(id int64, _ int, _ string) { f.closed = append(f.closed, id) }
+func (f *fakeRelay) Updates() <-chan struct{}                    { return f.updates }
+func (f *fakeRelay) ServeWS(http.ResponseWriter, *http.Request)  {}
 
 // panelFixture is one signed-in user with one paired installation.
 type panelFixture struct {
@@ -995,5 +1017,821 @@ func TestPanelCacheBoundsAndExpiry(t *testing.T) {
 	body[0] = 'x'
 	if a, ok := c.asset("d"); !ok || string(a.body) != "abc" {
 		t.Fatalf("cached asset aliases the caller's slice: %+v", a)
+	}
+}
+
+// dashboardFixture is a signed-in user with one paired installation.
+type dashboardFixture struct {
+	srv   *Server
+	store *store.Store
+	relay *fakeRelay
+	inst  *store.Installation
+	token string
+	csrf  string
+}
+
+func newDashboardFixture(t *testing.T, online bool) *dashboardFixture {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	if err := st.UpsertUser(store.User{ID: "u1", Username: "user one", GlobalName: "User One"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	token, csrf, err := st.CreateSession("u1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := st.CreateCode("u1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, _, err := st.RedeemCode(code, "Bot", "b1.2", "hive1", []string{"panel", "pause"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRelay{online: online, updates: make(chan struct{}, 1)}
+	srv := New(config.Config{PublicBaseURL: "https://panel.example.com", PanelCacheBytes: 1 << 20}, st, fr, nil)
+	return &dashboardFixture{srv: srv, store: st, relay: fr, inst: inst, token: token, csrf: csrf}
+}
+
+func (f *dashboardFixture) do(req *http.Request) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	f.srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func (f *dashboardFixture) get(path string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("GET", path, nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: f.token})
+	return f.do(req)
+}
+
+func (f *dashboardFixture) mutate(method, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(auth.CSRFHeader, f.csrf)
+	req.Header.Set("Origin", "https://panel.example.com")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: f.token})
+	return f.do(req)
+}
+
+func (f *dashboardFixture) installPath(suffix string) string {
+	return "/dashboard/api/installations/" + strconv.FormatInt(f.inst.ID, 10) + suffix
+}
+
+func TestStateIsScopedToUser(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Now()
+	token1, csrf1, err := st.CreateSession("u1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token2, _, err := st.CreateSession("u2", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := st.CreateCode("u1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, _, err := st.RedeemCode(code, "Bot", "b", "", nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTelemetry(inst.ID, &store.Telemetry{Account: "Acc", State: "SCANNING"}, now); err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1)}
+	s := New(config.Config{PublicBaseURL: "https://panel.example.com"}, st, fr, nil)
+
+	get := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/dashboard/api/state", nil)
+		if token != "" {
+			req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := get(token1)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	stateBody := rec.Body.String()
+	var body struct {
+		CSRF          string `json:"csrf"`
+		Installations []struct {
+			ID        int64            `json:"id"`
+			Name      string           `json:"name"`
+			Online    bool             `json:"online"`
+			Telemetry *store.Telemetry `json:"telemetry"`
+		} `json:"installations"`
+		Hives []struct {
+			Name  string `json:"name"`
+			Count int    `json:"count"`
+		} `json:"hives"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.CSRF != csrf1 || len(body.Installations) != 1 || body.Installations[0].Name != "Bot" ||
+		body.Installations[0].ID != inst.ID || !body.Installations[0].Online ||
+		body.Installations[0].Telemetry == nil || body.Installations[0].Telemetry.Account != "Acc" {
+		t.Fatalf("body=%s", rec.Body)
+	}
+	if len(body.Hives) != 0 {
+		t.Fatalf("empty hive should not be grouped: %s", rec.Body)
+	}
+
+	// Nothing in the state may carry the stored credential hash.
+	for _, stored := range st.State().Installations {
+		if strings.Contains(stateBody, stored.CredentialHash) {
+			t.Fatalf("state leaked a credential hash: %s", stateBody)
+		}
+	}
+	if strings.Contains(strings.ToLower(stateBody), "credentialhash") {
+		t.Fatalf("state leaked a credentialHash field: %s", stateBody)
+	}
+
+	if rec := get(token2); rec.Code != 200 || strings.Contains(rec.Body.String(), `"Bot"`) {
+		t.Fatalf("user2 saw user1's bot: status=%d body=%s", rec.Code, rec.Body)
+	}
+	if rec := get(""); rec.Code != 401 {
+		t.Fatalf("anonymous status=%d", rec.Code)
+	}
+}
+
+func TestStateGroupsHivesAndLastCommand(t *testing.T) {
+	f := newDashboardFixture(t, true)
+	now := time.Now()
+	if err := f.store.AddCommand(store.Command{
+		ID: "cmd_1", InstallationID: f.inst.ID, DiscordID: "u1", Command: "pause",
+		CreatedAt: now.UnixMilli(), State: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.AddCommand(store.Command{
+		ID: "cmd_2", InstallationID: f.inst.ID, DiscordID: "u1", Command: "resume",
+		CreatedAt: now.Add(time.Second).UnixMilli(), State: "rejected", Reason: "paused",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := f.get("/dashboard/api/state")
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("state cache-control=%q", rec.Header().Get("Cache-Control"))
+	}
+	var body struct {
+		Installations []struct {
+			Build       string `json:"build"`
+			Hive        string `json:"hive"`
+			LastCommand *struct {
+				Command   string `json:"command"`
+				State     string `json:"state"`
+				Reason    string `json:"reason"`
+				CreatedAt int64  `json:"createdAt"`
+			} `json:"lastCommand"`
+		} `json:"installations"`
+		Hives []struct {
+			Name  string `json:"name"`
+			Count int    `json:"count"`
+		} `json:"hives"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Installations) != 1 || body.Installations[0].Build != "b1.2" {
+		t.Fatalf("installations=%+v", body.Installations)
+	}
+	last := body.Installations[0].LastCommand
+	if last == nil || last.Command != "resume" || last.State != "rejected" || last.Reason != "paused" {
+		t.Fatalf("lastCommand=%+v", last)
+	}
+	if len(body.Hives) != 1 || body.Hives[0].Name != "hive1" || body.Hives[0].Count != 1 {
+		t.Fatalf("hives=%+v", body.Hives)
+	}
+}
+
+func TestDashboardResponsesNeverCarryCredentialHash(t *testing.T) {
+	f := newDashboardFixture(t, true)
+	hash := f.inst.CredentialHash
+	if hash == "" {
+		t.Fatal("fixture installation has no credential hash")
+	}
+	check := func(name string, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if strings.Contains(strings.ToLower(rec.Body.String()), "credentialhash") {
+			t.Fatalf("%s leaked a credentialHash field: %s", name, rec.Body)
+		}
+		if strings.Contains(rec.Body.String(), hash) {
+			t.Fatalf("%s leaked the credential hash: %s", name, rec.Body)
+		}
+	}
+	check("state", f.get("/dashboard/api/state"))
+	check("pair code", f.mutate("POST", "/dashboard/api/pair/code", ""))
+	check("command", f.mutate("POST", f.installPath("/command"), `{"command":"pause"}`))
+	check("rename", f.mutate("POST", f.installPath("/rename"), `{"name":"Renamed"}`))
+	check("unlink", f.mutate("DELETE", f.installPath(""), ""))
+}
+
+func TestDashboardCommandRenameUnlink(t *testing.T) {
+	f := newDashboardFixture(t, true)
+
+	rec := f.mutate("POST", f.installPath("/command"), `{"command":"pause"}`)
+	if rec.Code != http.StatusAccepted || !strings.Contains(rec.Body.String(), `"id":"cmd_test"`) {
+		t.Fatalf("command status=%d body=%s", rec.Code, rec.Body)
+	}
+	if len(f.relay.commands) != 1 || f.relay.commands[0] != "pause" {
+		t.Fatalf("commands=%v", f.relay.commands)
+	}
+
+	if rec := f.mutate("POST", f.installPath("/command"), `{"command":"explode"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported command status=%d body=%s", rec.Code, rec.Body)
+	}
+	if rec := f.mutate("POST", f.installPath("/command"), `not json`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid body status=%d", rec.Code)
+	}
+	if rec := f.mutate("POST", "/dashboard/api/installations/9999/command", `{"command":"pause"}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown installation status=%d", rec.Code)
+	}
+
+	// An offline client answers 409, never a queued command.
+	f.relay.online = false
+	if rec := f.mutate("POST", f.installPath("/command"), `{"command":"resume"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("offline command status=%d body=%s", rec.Code, rec.Body)
+	}
+	f.relay.online = true
+
+	if rec := f.mutate("POST", f.installPath("/rename"), `{"name":"  New Bot  "}`); rec.Code != http.StatusOK {
+		t.Fatalf("rename status=%d body=%s", rec.Code, rec.Body)
+	}
+	if inst, ok := f.store.Installation(f.inst.ID); !ok || inst.Name != "New Bot" {
+		t.Fatalf("renamed installation=%+v ok=%v", inst, ok)
+	}
+	if rec := f.mutate("POST", f.installPath("/rename"), `{"name":"   "}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty rename status=%d", rec.Code)
+	}
+	if rec := f.mutate("POST", f.installPath("/rename"), `{"name":"bad/name"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid rename status=%d", rec.Code)
+	}
+
+	if rec := f.mutate("DELETE", f.installPath(""), ""); rec.Code != http.StatusOK {
+		t.Fatalf("unlink status=%d body=%s", rec.Code, rec.Body)
+	}
+	if _, ok := f.store.Installation(f.inst.ID); ok {
+		t.Fatal("installation still stored after unlink")
+	}
+	if len(f.relay.closed) != 1 || f.relay.closed[0] != f.inst.ID {
+		t.Fatalf("closed=%v", f.relay.closed)
+	}
+	if rec := f.mutate("DELETE", f.installPath(""), ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("second unlink status=%d", rec.Code)
+	}
+}
+
+func TestDashboardMutatingRoutesRequireCSRFAndOwnership(t *testing.T) {
+	f := newDashboardFixture(t, true)
+
+	// No CSRF header.
+	req := httptest.NewRequest("POST", f.installPath("/command"), strings.NewReader(`{"command":"pause"}`))
+	req.Header.Set("Origin", "https://panel.example.com")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: f.token})
+	if rec := f.do(req); rec.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf status=%d", rec.Code)
+	}
+	// No origin.
+	req = httptest.NewRequest("POST", f.installPath("/rename"), strings.NewReader(`{"name":"x"}`))
+	req.Header.Set(auth.CSRFHeader, f.csrf)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: f.token})
+	if rec := f.do(req); rec.Code != http.StatusForbidden {
+		t.Fatalf("missing origin status=%d", rec.Code)
+	}
+
+	// Another user's installation is always 404.
+	token2, csrf2, err := f.store.CreateSession("u2", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ method, path, body string }{
+		{"POST", f.installPath("/command"), `{"command":"pause"}`},
+		{"POST", f.installPath("/rename"), `{"name":"stolen"}`},
+		{"DELETE", f.installPath(""), ""},
+	} {
+		req := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(auth.CSRFHeader, csrf2)
+		req.Header.Set("Origin", "https://panel.example.com")
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token2})
+		if rec := f.do(req); rec.Code != http.StatusNotFound {
+			t.Fatalf("foreign %s %s status=%d body=%s", c.method, c.path, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestDashboardRateLimits(t *testing.T) {
+	f := newDashboardFixture(t, true)
+	f.srv.Limiter = newLimiter(1, 1)
+
+	if rec := f.get("/dashboard/api/state"); rec.Code != http.StatusOK {
+		t.Fatalf("first state status=%d body=%s", rec.Code, rec.Body)
+	}
+	rec := f.get("/dashboard/api/state")
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), `"status":429`) {
+		t.Fatalf("second state status=%d body=%s", rec.Code, rec.Body)
+	}
+
+	f.srv.PairLimiter = newLimiter(1, 1)
+	if rec := f.mutate("POST", "/dashboard/api/pair/code", ""); rec.Code != http.StatusOK {
+		t.Fatalf("first pair code status=%d body=%s", rec.Code, rec.Body)
+	}
+	rec = f.mutate("POST", "/dashboard/api/pair/code", "")
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), `"status":429`) {
+		t.Fatalf("second pair code status=%d body=%s", rec.Code, rec.Body)
+	}
+
+	f.srv.CommandLimiter = newLimiter(1, 1)
+	if rec := f.mutate("POST", f.installPath("/command"), `{"command":"pause"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("first command status=%d body=%s", rec.Code, rec.Body)
+	}
+	rec = f.mutate("POST", f.installPath("/command"), `{"command":"pause"}`)
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), `"status":429`) {
+		t.Fatalf("second command status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestRedeemRateLimitsPerIPAndGlobal(t *testing.T) {
+	post := func(s *Server, ip string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/dashboard/api/pair/redeem", strings.NewReader(`{"code":"AAAAAAAA","protocols":[1]}`))
+		req.RemoteAddr = ip + ":1234"
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	s, _ := newTestServer(t)
+	s.PairLimiter = newLimiter(1, 1)
+	if rec := post(s, "192.0.2.1"); rec.Code != http.StatusNotFound {
+		t.Fatalf("first redeem status=%d body=%s", rec.Code, rec.Body)
+	}
+	if rec := post(s, "192.0.2.1"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second redeem from one IP status=%d body=%s", rec.Code, rec.Body)
+	}
+	// A different IP has its own bucket.
+	if rec := post(s, "192.0.2.2"); rec.Code != http.StatusNotFound {
+		t.Fatalf("other IP status=%d body=%s", rec.Code, rec.Body)
+	}
+
+	s2, _ := newTestServer(t)
+	s2.CommandLimiter = newLimiter(1, 1)
+	if rec := post(s2, "192.0.2.1"); rec.Code != http.StatusNotFound {
+		t.Fatalf("first global redeem status=%d", rec.Code)
+	}
+	if rec := post(s2, "192.0.2.2"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("global redeem limit status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestPanelRateLimitPerSession(t *testing.T) {
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1), panel: pageRelay()}
+	f := newPanelFixture(t, fr)
+	f.srv.Limiter = newLimiter(1, 1)
+
+	if rec := f.get(f.base); rec.Code != http.StatusOK {
+		t.Fatalf("first panel status=%d body=%s", rec.Code, rec.Body)
+	}
+	rec := f.get(f.base)
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), `"status":429`) {
+		t.Fatalf("second panel status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+// scanEvents reads SSE lines into a channel until the stream ends.
+func scanEvents(body io.Reader) <-chan string {
+	out := make(chan string, 32)
+	go func() {
+		defer close(out)
+		scanner := bufio.NewScanner(body)
+		for scanner.Scan() {
+			out <- scanner.Text()
+		}
+	}()
+	return out
+}
+
+// waitEvent waits for one complete event containing want.
+func waitEvent(t *testing.T, lines <-chan string, want string) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	seen := make([]string, 0, 4)
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.Fatalf("stream closed while waiting for %q (seen %v)", want, seen)
+			}
+			if line == "" {
+				if strings.Contains(strings.Join(seen, "\n"), want) {
+					return
+				}
+				seen = seen[:0]
+				continue
+			}
+			seen = append(seen, line)
+		case <-timeout:
+			t.Fatalf("timed out waiting for %q (seen %v)", want, seen)
+		}
+	}
+}
+
+func TestSSEStreamAndTabLimit(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	if err := st.UpsertUser(store.User{ID: "u1", Username: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := st.CreateSession("u1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1)}
+	s := New(config.Config{PublicBaseURL: "https://panel.example.com"}, st, fr, nil)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	type stream struct {
+		resp   *http.Response
+		cancel context.CancelFunc
+		lines  <-chan string
+	}
+	open := func() *stream {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/dashboard/events", nil)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		return &stream{resp: resp, cancel: cancel, lines: scanEvents(resp.Body)}
+	}
+
+	first := open()
+	defer first.cancel()
+	if ct := first.resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content-type=%q", ct)
+	}
+	if cc := first.resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("cache-control=%q", cc)
+	}
+	waitEvent(t, first.lines, "event: update")
+
+	// A hub notification reaches the stream.
+	fr.updates <- struct{}{}
+	waitEvent(t, first.lines, "event: update")
+
+	// Five tabs are allowed; the sixth is refused.
+	others := make([]*stream, 0, 4)
+	defer func() {
+		for _, o := range others {
+			o.cancel()
+			o.resp.Body.Close()
+		}
+	}()
+	for i := 0; i < 4; i++ {
+		others = append(others, open())
+		waitEvent(t, others[i].lines, "event: update")
+	}
+
+	req, err := http.NewRequest("GET", ts.URL+"/dashboard/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(body), `"status":429`) {
+		t.Fatalf("sixth tab status=%d body=%s", resp.StatusCode, body)
+	}
+
+	// Anonymous streams are refused before the tab budget is touched.
+	anon, err := http.Get(ts.URL + "/dashboard/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anon.Body.Close()
+	if anon.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous stream status=%d", anon.StatusCode)
+	}
+}
+
+// fakeDiscordUser starts a stand-in Discord API and returns a client for it.
+func fakeDiscordUser(t *testing.T, id, username, globalName string) *auth.Discord {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			if err := r.ParseForm(); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("code") != "authcode" ||
+				len(r.Form.Get("code_verifier")) < 43 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "token-1"})
+		case "/users/@me":
+			if r.Header.Get("Authorization") != "Bearer token-1" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": id, "username": username, "global_name": globalName,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &auth.Discord{
+		ClientID:     "cid",
+		ClientSecret: "secret",
+		RedirectURI:  "https://panel.example.com/auth/callback",
+		AuthorizeURL: "https://discord.example.com/oauth2/authorize",
+		TokenURL:     srv.URL + "/oauth2/token",
+		UserURL:      srv.URL + "/users/@me",
+		HTTP:         srv.Client(),
+	}
+}
+
+// startOAuth performs /auth/login and returns the state value.
+func startOAuth(t *testing.T, s *Server) (state, verifier string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/auth/login", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("login status=%d body=%s", rec.Code, rec.Body)
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state = loc.Query().Get("state")
+	if state == "" {
+		t.Fatalf("no state in %q", loc)
+	}
+	return state, s.States.m[state].verifier
+}
+
+func oauthCallback(s *Server, state, code string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("GET",
+		"/auth/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code), nil)
+	req.AddCookie(&http.Cookie{Name: auth.OAuthCookie, Value: state})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// oauthCookieCleared reports whether the response expires the OAuth cookie.
+func oauthCookieCleared(rec *httptest.ResponseRecorder) bool {
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.OAuthCookie && c.MaxAge < 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func TestOAuthLoginAndCallback(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	d := fakeDiscordUser(t, "42", "alice", "Alice")
+	s := New(config.Config{PublicBaseURL: "https://panel.example.com"}, st, nil, d)
+
+	login := httptest.NewRecorder()
+	s.Handler().ServeHTTP(login, httptest.NewRequest("GET", "/auth/login", nil))
+	if login.Code != http.StatusFound {
+		t.Fatalf("login status=%d body=%s", login.Code, login.Body)
+	}
+	loc, err := url.Parse(login.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := loc.Query()
+	state, challenge := q.Get("state"), q.Get("code_challenge")
+	if state == "" || challenge == "" || q.Get("code_challenge_method") != "S256" ||
+		q.Get("redirect_uri") != "https://panel.example.com/auth/callback" ||
+		q.Get("client_id") != "cid" || q.Get("scope") != "identify" {
+		t.Fatalf("authorize url=%q", loc)
+	}
+	verifier := s.States.m[state].verifier
+	if verifier == "" || !auth.VerifyPKCE(verifier, challenge) {
+		t.Fatal("server-side verifier does not match the challenge")
+	}
+
+	var oauthCookie *http.Cookie
+	for _, c := range login.Result().Cookies() {
+		if c.Name == auth.OAuthCookie {
+			oauthCookie = c
+		}
+	}
+	if oauthCookie == nil || oauthCookie.Value != state || !oauthCookie.HttpOnly ||
+		oauthCookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("oauth cookie=%+v", oauthCookie)
+	}
+
+	rec := oauthCallback(s, state, "authcode")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("callback status=%d location=%q body=%s", rec.Code, rec.Header().Get("Location"), rec.Body)
+	}
+	if !oauthCookieCleared(rec) {
+		t.Fatal("callback did not clear the OAuth cookie")
+	}
+	var session *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.CookieName {
+			session = c
+		}
+	}
+	if session == nil || session.Value == "" || !session.HttpOnly ||
+		session.SameSite != http.SameSiteLaxMode || session.MaxAge != 30*24*60*60 {
+		t.Fatalf("session cookie=%+v", session)
+	}
+	sess, ok := st.Session(session.Value, time.Now())
+	if !ok || sess.DiscordID != "42" || sess.CSRF == "" {
+		t.Fatalf("session=%+v ok=%v", sess, ok)
+	}
+	user, ok := st.User("42")
+	if !ok || user.Username != "alice" || user.GlobalName != "Alice" {
+		t.Fatalf("user=%+v ok=%v", user, ok)
+	}
+}
+
+func TestOAuthCallbackRejectsBadState(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := New(config.Config{PublicBaseURL: "https://panel.example.com"}, st, nil, nil)
+
+	cases := []struct {
+		name   string
+		cookie string
+		value  string
+	}{
+		{"missing cookie", "", ""},
+		{"empty state", "", ""},
+		{"cookie without state", "abcdef", ""},
+		{"state mismatch", "abcdef", "fedcba"},
+		{"unknown state", "abcdef", "abcdef"},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest("GET", "/auth/callback?state="+url.QueryEscape(c.value)+"&code=x", nil)
+		if c.cookie != "" {
+			req.AddCookie(&http.Cookie{Name: auth.OAuthCookie, Value: c.cookie})
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s status=%d body=%s", c.name, rec.Code, rec.Body)
+		}
+		if !oauthCookieCleared(rec) {
+			t.Fatalf("%s did not clear the OAuth cookie", c.name)
+		}
+	}
+
+	// A cancelled sign-in is reported after the state is validated.
+	state, _ := auth.RandomToken(24)
+	s.States.put(state, "verifier", time.Minute)
+	req := httptest.NewRequest("GET", "/auth/callback?state="+url.QueryEscape(state)+"&error=access_denied", nil)
+	req.AddCookie(&http.Cookie{Name: auth.OAuthCookie, Value: state})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "cancelled") {
+		t.Fatalf("cancelled status=%d body=%s", rec.Code, rec.Body)
+	}
+	if _, ok := s.States.take(state); ok {
+		t.Fatal("state was not consumed by the callback")
+	}
+}
+
+func TestOAuthCallbackRejectsDisallowedUser(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	d := fakeDiscordUser(t, "42", "alice", "Alice")
+	s := New(config.Config{
+		PublicBaseURL:     "https://panel.example.com",
+		AllowedDiscordIDs: map[string]bool{"99": true},
+	}, st, nil, d)
+
+	state, _ := startOAuth(t, s)
+	rec := oauthCallback(s, state, "authcode")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("disallowed status=%d body=%s", rec.Code, rec.Body)
+	}
+	if !oauthCookieCleared(rec) {
+		t.Fatal("disallowed sign-in did not clear the OAuth cookie")
+	}
+	if len(st.State().Sessions) != 0 {
+		t.Fatal("disallowed sign-in created a session")
+	}
+}
+
+func TestDevLoginAndLogout(t *testing.T) {
+	s, st := newTestServer(t)
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/auth/dev", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("dev login disabled status=%d", rec.Code)
+	}
+
+	s.Cfg.DevLogin = true
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/auth/dev?user=Alice%20B!", nil))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("dev login status=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+	var session *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.CookieName {
+			session = c
+		}
+	}
+	if session == nil || session.Value == "" {
+		t.Fatal("dev login set no session cookie")
+	}
+	sess, ok := st.Session(session.Value, time.Now())
+	if !ok || sess.DiscordID != "dev-aliceb" {
+		t.Fatalf("dev session=%+v ok=%v", sess, ok)
+	}
+	if _, ok := st.User("dev-aliceb"); !ok {
+		t.Fatal("dev user was not stored")
+	}
+
+	// Logout drops the session and clears the cookie.
+	req := httptest.NewRequest("POST", "/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: session.Value})
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("logout status=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+	cleared := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.CookieName && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("logout did not clear the session cookie")
+	}
+	if _, ok := st.Session(session.Value, time.Now()); ok {
+		t.Fatal("logout left the session valid")
+	}
+}
+
+func TestAuthLoginWithoutDiscord(t *testing.T) {
+	s, _ := newTestServer(t) // nil Discord client
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/auth/login", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.OAuthCookie {
+			t.Fatal("unavailable sign-in still set an OAuth cookie")
+		}
 	}
 }

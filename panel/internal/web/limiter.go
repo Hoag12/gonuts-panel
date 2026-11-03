@@ -63,16 +63,19 @@ func (l *limiter) evictLocked(now time.Time) {
 	cutoff := now.Add(-limiterBucketTTL)
 	var oldestKey string
 	var oldest time.Time
+	// found is explicit: keys are caller-supplied strings, so "" is a legal
+	// bucket key and cannot double as an "unset" sentinel.
+	found := false
 	for k, b := range l.buckets {
 		if b.last.Before(cutoff) {
 			delete(l.buckets, k)
 			continue
 		}
-		if oldestKey == "" || b.last.Before(oldest) {
-			oldestKey, oldest = k, b.last
+		if !found || b.last.Before(oldest) {
+			oldestKey, oldest, found = k, b.last, true
 		}
 	}
-	if len(l.buckets) >= limiterMaxBuckets && oldestKey != "" {
+	if len(l.buckets) >= limiterMaxBuckets && found {
 		delete(l.buckets, oldestKey)
 	}
 }

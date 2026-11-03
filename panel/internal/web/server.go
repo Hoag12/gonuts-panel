@@ -39,14 +39,21 @@ type Relay interface {
 }
 
 type Server struct {
-	Cfg        config.Config
-	Store      *store.Store
-	Hub        Relay
-	Discord    *auth.Discord
-	States     *oauthStates
-	Limiter    *limiter
-	SSE        *sseHub
-	PanelCache *panelCache
+	Cfg     config.Config
+	Store   *store.Store
+	Hub     Relay
+	Discord *auth.Discord
+	States  *oauthStates
+	// Limiter enforces the 120/min dashboard and panel budgets.
+	Limiter *limiter
+	// PairLimiter enforces 10/min for pairing-code creation and for redemption
+	// per client IP.
+	PairLimiter *limiter
+	// CommandLimiter enforces 60/min for commands and the global redemption
+	// budget.
+	CommandLimiter *limiter
+	SSE            *sseHub
+	PanelCache     *panelCache
 }
 
 // New builds a Server. A nil hub is replaced by an offline no-op so auth and
@@ -56,14 +63,16 @@ func New(cfg config.Config, st *store.Store, hub Relay, d *auth.Discord) *Server
 		hub = noopRelay{}
 	}
 	return &Server{
-		Cfg:        cfg,
-		Store:      st,
-		Hub:        hub,
-		Discord:    d,
-		States:     &oauthStates{m: map[string]oauthState{}},
-		Limiter:    newLimiter(120, 120),
-		SSE:        newSSEHub(5),
-		PanelCache: newPanelCache(cfg.PanelCacheBytes),
+		Cfg:            cfg,
+		Store:          st,
+		Hub:            hub,
+		Discord:        d,
+		States:         &oauthStates{m: map[string]oauthState{}},
+		Limiter:        newLimiter(120, 120),
+		PairLimiter:    newLimiter(10, 10),
+		CommandLimiter: newLimiter(60, 60),
+		SSE:            newSSEHub(5),
+		PanelCache:     newPanelCache(cfg.PanelCacheBytes),
 	}
 }
 
@@ -123,11 +132,14 @@ func (s *Server) session(r *http.Request) (*store.Session, *store.User, bool) {
 	if !ok {
 		return nil, nil, false
 	}
-	user, ok := s.Store.User(sess.DiscordID)
-	if !ok {
-		return nil, nil, false
+	// The session is the authority for identity; the profile row is only
+	// presentation data. A session whose profile row is absent (created
+	// directly by an operator tool, or whose profile was removed) keeps
+	// working rather than locking its owner out.
+	if user, ok := s.Store.User(sess.DiscordID); ok {
+		return sess, user, true
 	}
-	return sess, user, true
+	return sess, &store.User{ID: sess.DiscordID, Username: sess.DiscordID}, true
 }
 
 func (s *Server) requireSession(w http.ResponseWriter, r *http.Request) (*store.Session, *store.User, bool) {
@@ -158,10 +170,38 @@ func (s *Server) requireMutation(w http.ResponseWriter, r *http.Request) (*store
 	return sess, user, true
 }
 
+// writeJSON writes a JSON response with the status and content type set.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// dashboardLimit applies the 120/min per-IP dashboard budget to a page or API
+// read and answers 429 when the caller is over it.
+func (s *Server) dashboardLimit(w http.ResponseWriter, r *http.Request) bool {
+	if s.Limiter.allow("dashboard:"+s.clientIP(r), time.Now()) {
+		return true
+	}
+	writeJSON(w, http.StatusTooManyRequests, map[string]any{
+		"message": "too many requests",
+		"status":  http.StatusTooManyRequests,
+	})
+	return false
+}
+
+// panelLimit applies the 120/min per-session budget to relayed panel routes.
+// The key is the session token hash, so two tabs of one session share a budget
+// and two sessions do not.
+func (s *Server) panelLimit(w http.ResponseWriter, r *http.Request) bool {
+	if s.Limiter.allow("panel:"+store.HashToken(auth.CookieToken(r)), time.Now()) {
+		return true
+	}
+	writeJSON(w, http.StatusTooManyRequests, map[string]any{
+		"message": "too many panel requests",
+		"status":  http.StatusTooManyRequests,
+	})
+	return false
 }
 
 func pageRedirect(to string) http.HandlerFunc {
@@ -210,14 +250,41 @@ func (noopRelay) Updates() <-chan struct{} {
 
 func (noopRelay) ServeWS(http.ResponseWriter, *http.Request) {}
 
-// notImplemented answers routes whose handlers belong to a later task.
-func notImplemented(w http.ResponseWriter) {
-	writeJSON(w, http.StatusNotImplemented, map[string]any{
-		"message": "not implemented",
-		"status":  http.StatusNotImplemented,
-	})
+// dashboardPage serves the dashboard shell when signed in and the sign-in page
+// otherwise. The dashboard HTML carries the session's CSRF token.
+func (s *Server) dashboardPage(w http.ResponseWriter, r *http.Request) {
+	if !s.dashboardLimit(w, r) {
+		return
+	}
+	sess, _, ok := s.session(r)
+	if !ok {
+		b, err := webassets.FS.ReadFile("login.html")
+		if err != nil {
+			http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+			return
+		}
+		h := w.Header()
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		h.Set("Cache-Control", "no-store")
+		_, _ = w.Write(b)
+		return
+	}
+	b, err := dashboardHTML(sess.CSRF)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "no-store")
+	_, _ = w.Write(b)
 }
 
-// dashboardPage serves the dashboard shell when signed in and the sign-in page
-// otherwise. Task 8 replaces this stub.
-func (s *Server) dashboardPage(w http.ResponseWriter, r *http.Request) { notImplemented(w) }
+// dashboardHTML loads the dashboard shell and substitutes the CSRF token.
+func dashboardHTML(csrf string) ([]byte, error) {
+	b, err := webassets.FS.ReadFile("dashboard.html")
+	if err != nil {
+		return nil, err
+	}
+	return []byte(strings.ReplaceAll(string(b), "{{CSRF}}", csrf)), nil
+}
