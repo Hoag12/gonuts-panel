@@ -184,7 +184,7 @@ Rules:
 | Route | Auth | Purpose |
 |---|---|---|
 | `GET /` | none | redirect to `/dashboard` |
-| `GET /dashboard` | session | dashboard shell; signed-out state shows Discord sign-in |
+| `GET /dashboard` | public | dashboard shell when signed in; sign-in page when signed out |
 | `GET /auth/login` | none | build Discord authorize URL (state + PKCE), redirect |
 | `GET /auth/callback` | OAuth state cookie | exchange code, create session, redirect `/dashboard` |
 | `GET /auth/dev` | dev-only flag | create a local test session; disabled by default |
@@ -293,14 +293,18 @@ Success `201`:
 }
 ```
 
-The credential is shown once and stored hashed. Errors follow the contract
-(400/404/409/410/429/503). The mod's existing `DashboardProtocol.pairError`
-already maps these.
+The credential is shown once and stored hashed. `wsUrl` uses `wss://` for an
+HTTPS public origin and `ws://` only for a localhost HTTP test origin. Errors
+follow the contract (400/404/409/410/429/503). The mod's existing
+`DashboardProtocol.pairError` already maps these.
 
 ### Socket
 
 - Upgrade path `/dashboard/ws/client`, `Authorization: Bearer gni1_…`.
-- Reject requests carrying an `Origin` header (browser) with close 4403.
+- A request without a valid bearer credential is rejected before the upgrade
+  (HTTP 401). A valid credential that nevertheless carries an `Origin` header
+  (browser-style) is upgraded and immediately closed with 4403. The mod never
+  sends `Origin`.
 - Unknown/revoked credential: close 4401.
 - First frame within 10 s must be `hello` with `protocols` containing 1.
 - Reply `welcome` with protocol, installation id, heartbeat 20,
