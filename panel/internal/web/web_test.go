@@ -353,7 +353,9 @@ func TestEmbeddedAssetsAreServed(t *testing.T) {
 		{"/assets/dashboard.js", "javascript"},
 		{"/assets/mascot_v2.png", "image/png"},
 		{"/assets/logo.png", "image/png"},
-		{"/assets/Monocraft.ttf", ""},
+		// The font is served with nosniff, so the type has to be exact rather
+		// than host-dependent.
+		{"/assets/Monocraft.ttf", "font/ttf"},
 	}
 	for _, a := range assets {
 		rec := httptest.NewRecorder()

@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"strings"
@@ -27,6 +28,17 @@ import (
 const dashboardCSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
 	"script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; " +
 	"base-uri 'none'; form-action 'self'"
+
+// init pins the webfont MIME type. The assets route answers with nosniff set, so
+// the Content-Type must be exact; without this it depends on the host's mime
+// database (and the Windows registry), which reports font/ttf,
+// application/x-font-ttf, or nothing at all. Registering it here keeps the
+// dashboard font working identically in every build target.
+func init() {
+	if err := mime.AddExtensionType(".ttf", "font/ttf"); err != nil {
+		log.Printf("web: register .ttf mime type: %v", err)
+	}
+}
 
 // Relay is implemented by *relay.Hub and by test fakes.
 type Relay interface {
