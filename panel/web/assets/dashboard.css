@@ -3,6 +3,9 @@
   --secondary:#b6c2cd; --muted:#8799aa; --gold:#f4cd7a; --teal:#56dccb; --good:#77deb0;
   --warn:#f3b576; --bad:#ff858c; --pixel:"GoNuts Pixel", "Courier New", monospace; }
 * { box-sizing:border-box; }
+/* Author display rules (.modal grid, .hive flex) outrank the UA [hidden] rule,
+   so the attribute needs an explicit override to actually hide its node. */
+[hidden] { display:none !important; }
 body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 var(--pixel); }
 .top { display:flex; align-items:center; gap:14px; padding:14px 20px; flex-wrap:wrap; }
 .top h1 { margin:0; font-size:20px; color:var(--gold); font-weight:400; letter-spacing:.03em; }
