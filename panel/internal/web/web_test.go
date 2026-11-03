@@ -1,11 +1,14 @@
 package web
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -224,9 +227,6 @@ func TestDeferredHandlersAnswer501(t *testing.T) {
 		{"POST", "/dashboard/api/installations/1/rename"},
 		{"DELETE", "/dashboard/api/installations/1"},
 		{"GET", "/dashboard/events"},
-		{"GET", "/dashboard/panel/1/"},
-		{"GET", "/dashboard/panel/1/state"},
-		{"POST", "/dashboard/panel/1/act"},
 	}
 	for _, c := range cases {
 		req := httptest.NewRequest(c.method, c.path, strings.NewReader("{}"))
@@ -403,5 +403,540 @@ func TestLimiterDropsIdleBuckets(t *testing.T) {
 	}
 	if _, ok := l.buckets["new"]; !ok {
 		t.Fatal("newly inserted bucket missing after sweep")
+	}
+}
+
+// fakeRelay is a controllable Relay for panel proxy tests.
+type fakeRelay struct {
+	online   bool
+	frames   []map[string]any
+	commands []string
+	updates  chan struct{}
+	panel    func(context.Context, int64, map[string]any) (*relay.PanelResult, error)
+}
+
+func (f *fakeRelay) Online(int64) bool { return f.online }
+
+func (f *fakeRelay) SendCommand(_ int64, c string) (string, error) {
+	f.commands = append(f.commands, c)
+	return "cmd_test", nil
+}
+
+func (f *fakeRelay) PanelRequest(ctx context.Context, id int64, frame map[string]any) (*relay.PanelResult, error) {
+	if !f.online {
+		return nil, relay.ErrOffline
+	}
+	f.frames = append(f.frames, frame)
+	return f.panel(ctx, id, frame)
+}
+
+func (f *fakeRelay) CloseInstallation(int64, int, string)       {}
+func (f *fakeRelay) Updates() <-chan struct{}                   { return f.updates }
+func (f *fakeRelay) ServeWS(http.ResponseWriter, *http.Request) {}
+
+// panelFixture is one signed-in user with one paired installation.
+type panelFixture struct {
+	srv   *Server
+	store *store.Store
+	relay *fakeRelay
+	inst  *store.Installation
+	token string
+	csrf  string
+	base  string
+}
+
+func newPanelFixture(t *testing.T, fr *fakeRelay) *panelFixture {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	token, csrf, err := st.CreateSession("u1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := st.CreateCode("u1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, _, err := st.RedeemCode(code, "Bot", "b", "", []string{"panel"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{PublicBaseURL: "https://panel.example.com", PanelCacheBytes: 1 << 20}, st, fr, nil)
+	return &panelFixture{
+		srv:   srv,
+		store: st,
+		relay: fr,
+		inst:  inst,
+		token: token,
+		csrf:  csrf,
+		base:  "/dashboard/panel/" + strconv.FormatInt(inst.ID, 10) + "/",
+	}
+}
+
+func (f *panelFixture) do(req *http.Request) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	f.srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func (f *panelFixture) get(path string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("GET", path, nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: f.token})
+	return f.do(req)
+}
+
+func (f *panelFixture) post(path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-GoNuts", "1")
+	req.Header.Set(auth.CSRFHeader, f.csrf)
+	req.Header.Set("Origin", "https://panel.example.com")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: f.token})
+	return f.do(req)
+}
+
+func pageRelay() func(context.Context, int64, map[string]any) (*relay.PanelResult, error) {
+	return func(context.Context, int64, map[string]any) (*relay.PanelResult, error) {
+		return &relay.PanelResult{Status: 200, ContentType: "text/html; charset=utf-8",
+			Body: []byte(`<head></head><img src="/logo.png"><form class="out" method="post" action="/logout"><button>Lock</button></form>`)}, nil
+	}
+}
+
+func TestPanelPageRewritesAndProxies(t *testing.T) {
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1), panel: pageRelay()}
+	f := newPanelFixture(t, fr)
+
+	rec := f.get(f.base)
+	if rec.Code != 200 {
+		t.Fatalf("page status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `src="logo.png"`) || strings.Contains(body, "gonuts.at") || !strings.Contains(body, `gonuts-csrf`) {
+		t.Fatalf("bad page:\n%s", body)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Security-Policy"), "script-src 'self' 'unsafe-inline'") {
+		t.Fatalf("panel csp=%q", rec.Header().Get("Content-Security-Policy"))
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("page cache-control=%q", rec.Header().Get("Cache-Control"))
+	}
+
+	rec = f.post(f.base+"act", "id=ctl:start")
+	if rec.Code != 204 {
+		t.Fatalf("act status=%d body=%s", rec.Code, rec.Body)
+	}
+	if len(fr.frames) < 2 || fr.frames[len(fr.frames)-1]["op"] != "act" ||
+		fr.frames[len(fr.frames)-1]["act"].(map[string]any)["id"] != "ctl:start" {
+		t.Fatalf("frames=%+v", fr.frames)
+	}
+
+	// A different user gets 404, not another user's panel.
+	token2, _, err := f.store.CreateSession("u2", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", f.base, nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token2})
+	if rec := f.do(req); rec.Code != 404 {
+		t.Fatalf("ownership status=%d", rec.Code)
+	}
+
+	// Offline with no cache is a styled 503.
+	fr.online = false
+	if err := f.store.DeleteInstallation(f.inst.ID, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	code2, _, err := f.store.CreateCode("u1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst2, _, err := f.store.RedeemCode(code2, "Bot2", "b", "", []string{"panel"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = f.get("/dashboard/panel/" + strconv.FormatInt(inst2.ID, 10) + "/")
+	if rec.Code != 503 {
+		t.Fatalf("offline status=%d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("offline content-type=%q", ct)
+	}
+	if !strings.Contains(rec.Body.String(), `href="/dashboard"`) {
+		t.Fatalf("offline page has no dashboard link:\n%s", rec.Body)
+	}
+}
+
+func TestPanelPageCachesRawHTMLAndInjectsSessionCSRF(t *testing.T) {
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1), panel: pageRelay()}
+	f := newPanelFixture(t, fr)
+
+	if rec := f.get(f.base); rec.Code != 200 {
+		t.Fatalf("first page status=%d", rec.Code)
+	}
+	// A second session for the same owner must get its own token even though
+	// the page body comes from the cache.
+	token2, csrf2, err := f.store.CreateSession("u1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", f.base, nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token2})
+	rec := f.do(req)
+	if rec.Code != 200 {
+		t.Fatalf("second page status=%d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `content="`+csrf2+`"`) {
+		t.Fatalf("second session token missing:\n%s", rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), `content="`+f.csrf+`"`) {
+		t.Fatal("cached page carried the first session's token")
+	}
+	if len(fr.frames) != 1 {
+		t.Fatalf("page frames=%d, want 1 (cached)", len(fr.frames))
+	}
+}
+
+func TestPanelPageOfflineServesCachedPage(t *testing.T) {
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1), panel: pageRelay()}
+	f := newPanelFixture(t, fr)
+	if rec := f.get(f.base); rec.Code != 200 {
+		t.Fatalf("page status=%d", rec.Code)
+	}
+	fr.online = false
+	rec := f.get(f.base)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `gonuts-csrf`) {
+		t.Fatalf("cached offline page status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestPanelGetMapsPathsAndCachesAssets(t *testing.T) {
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1)}
+	fr.panel = func(_ context.Context, _ int64, frame map[string]any) (*relay.PanelResult, error) {
+		switch frame["op"] {
+		case "state":
+			return &relay.PanelResult{Status: 200, ContentType: "application/json; charset=utf-8", Body: []byte(`{"ok":true}`)}, nil
+		case "data":
+			name := frame["name"].(string)
+			return &relay.PanelResult{Status: 200, ContentType: "application/json; charset=utf-8", Body: []byte(`{"name":"` + name + `"}`)}, nil
+		case "png":
+			return &relay.PanelResult{Status: 200, ContentType: "image/png", Body: []byte{0x89, 'P', 'N', 'G'}}, nil
+		case "icon":
+			return &relay.PanelResult{Status: 200, ContentType: "image/png", Body: []byte{1, 2, 3}}, nil
+		case "asset":
+			if frame["asset"] == "font" {
+				return &relay.PanelResult{Status: 200, ContentType: "font/ttf", Body: []byte{4, 5}}, nil
+			}
+			return &relay.PanelResult{Status: 200, ContentType: "image/png", Body: []byte{6, 7}}, nil
+		}
+		return &relay.PanelResult{Status: 404, ContentType: "text/plain; charset=utf-8"}, nil
+	}
+	f := newPanelFixture(t, fr)
+
+	// State is relayed on every request and never cached.
+	for i := 0; i < 2; i++ {
+		rec := f.get(f.base + "state")
+		if rec.Code != 200 || rec.Body.String() != `{"ok":true}` {
+			t.Fatalf("state %d status=%d body=%s", i, rec.Code, rec.Body)
+		}
+		if rec.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+			t.Fatalf("state content-type=%q", rec.Header().Get("Content-Type"))
+		}
+		if rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("state cache-control=%q", rec.Header().Get("Cache-Control"))
+		}
+	}
+	if len(fr.frames) != 2 || fr.frames[0]["op"] != "state" {
+		t.Fatalf("state frames=%+v", fr.frames)
+	}
+
+	// api/<name> keeps the parsed query.
+	rec := f.get(f.base + "api/bots?hive=h1&q=a&q=b")
+	if rec.Code != 200 || rec.Body.String() != `{"name":"bots"}` {
+		t.Fatalf("data status=%d body=%s", rec.Code, rec.Body)
+	}
+	last := fr.frames[len(fr.frames)-1]
+	query, ok := last["query"].(map[string]string)
+	if last["op"] != "data" || last["name"] != "bots" || !ok || query["hive"] != "h1" || query["q"] != "a" {
+		t.Fatalf("data frame=%+v", last)
+	}
+
+	// Binary routes are cached, so the second request costs no frame.
+	pngRec := f.get(f.base + "panel.png")
+	if pngRec.Code != 200 || pngRec.Header().Get("Content-Type") != "image/png" ||
+		!bytes.Equal(pngRec.Body.Bytes(), []byte{0x89, 'P', 'N', 'G'}) {
+		t.Fatalf("png status=%d type=%q body=%v", pngRec.Code, pngRec.Header().Get("Content-Type"), pngRec.Body.Bytes())
+	}
+	before := len(fr.frames)
+	if rec := f.get(f.base + "panel.png"); rec.Code != 200 || len(fr.frames) != before {
+		t.Fatalf("png not cached: status=%d frames=%d want %d", rec.Code, len(fr.frames), before)
+	}
+
+	if rec := f.get(f.base + "item/minecraft:stone.png"); rec.Code != 200 {
+		t.Fatalf("icon status=%d", rec.Code)
+	}
+	icon := fr.frames[len(fr.frames)-1]
+	if icon["op"] != "icon" || icon["item"] != "minecraft:stone" {
+		t.Fatalf("icon frame=%+v", icon)
+	}
+
+	if rec := f.get(f.base + "logo.png"); rec.Code != 200 {
+		t.Fatalf("logo status=%d", rec.Code)
+	}
+	logo := fr.frames[len(fr.frames)-1]
+	if logo["op"] != "asset" || logo["asset"] != "logo" {
+		t.Fatalf("logo frame=%+v", logo)
+	}
+
+	fontRec := f.get(f.base + "font.ttf")
+	if fontRec.Code != 200 || fontRec.Header().Get("Content-Type") != "font/ttf" {
+		t.Fatalf("font status=%d type=%q", fontRec.Code, fontRec.Header().Get("Content-Type"))
+	}
+	font := fr.frames[len(fr.frames)-1]
+	if font["op"] != "asset" || font["asset"] != "font" {
+		t.Fatalf("font frame=%+v", font)
+	}
+
+	for _, path := range []string{"nope", "api/Bots", "api/a/b", "api/", "item/bad%20item.png", "item/x.gif", "panel.png/"} {
+		if rec := f.get(f.base + path); rec.Code != 404 {
+			t.Fatalf("%s status=%d body=%s", path, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestPanelContentTypeIsClamped(t *testing.T) {
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1)}
+	fr.panel = func(_ context.Context, _ int64, frame map[string]any) (*relay.PanelResult, error) {
+		ct := `text/html; onerror=alert(1)`
+		switch frame["name"] {
+		case "json":
+			ct = "application/json; charset=utf-8"
+		case "svg":
+			ct = "image/svg+xml"
+		case "quoted":
+			ct = `text/plain; charset="UTF-8"`
+		}
+		return &relay.PanelResult{Status: 200, ContentType: ct, Body: []byte("{}")}, nil
+	}
+	f := newPanelFixture(t, fr)
+
+	cases := map[string]string{
+		"api/injected": "application/octet-stream",
+		"api/json":     "application/json; charset=utf-8",
+		"api/svg":      "application/octet-stream",
+		"api/quoted":   "text/plain; charset=utf-8",
+	}
+	for path, want := range cases {
+		rec := f.get(f.base + path)
+		if rec.Code != 200 {
+			t.Fatalf("%s status=%d", path, rec.Code)
+		}
+		if got := rec.Header().Get("Content-Type"); got != want {
+			t.Fatalf("%s content-type=%q want %q", path, got, want)
+		}
+		if strings.Contains(rec.Header().Get("Content-Type"), "onerror") {
+			t.Fatalf("%s leaked a raw content type", path)
+		}
+	}
+}
+
+func TestPanelPostValidation(t *testing.T) {
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1), panel: pageRelay()}
+	f := newPanelFixture(t, fr)
+
+	// Missing X-GoNuts.
+	req := httptest.NewRequest("POST", f.base+"act", strings.NewReader("id=ctl:start"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(auth.CSRFHeader, f.csrf)
+	req.Header.Set("Origin", "https://panel.example.com")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: f.token})
+	if rec := f.do(req); rec.Code != http.StatusForbidden {
+		t.Fatalf("missing X-GoNuts status=%d", rec.Code)
+	}
+
+	// Anonymous.
+	req = httptest.NewRequest("POST", f.base+"act", strings.NewReader("id=ctl:start"))
+	req.Header.Set("X-GoNuts", "1")
+	if rec := f.do(req); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous status=%d", rec.Code)
+	}
+
+	// Missing CSRF.
+	req = httptest.NewRequest("POST", f.base+"act", strings.NewReader("id=ctl:start"))
+	req.Header.Set("X-GoNuts", "1")
+	req.Header.Set("Origin", "https://panel.example.com")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: f.token})
+	if rec := f.do(req); rec.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf status=%d", rec.Code)
+	}
+
+	// Another user's installation.
+	token2, csrf2, err := f.store.CreateSession("u2", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest("POST", f.base+"act", strings.NewReader("id=ctl:start"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-GoNuts", "1")
+	req.Header.Set(auth.CSRFHeader, csrf2)
+	req.Header.Set("Origin", "https://panel.example.com")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token2})
+	if rec := f.do(req); rec.Code != http.StatusNotFound {
+		t.Fatalf("foreign installation status=%d", rec.Code)
+	}
+
+	// Bad action id and oversized form.
+	if rec := f.post(f.base+"act", "id="+strings.Repeat("x", 20)); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad act id status=%d", rec.Code)
+	}
+	if rec := f.post(f.base+"act", "id=ctl:start&text="+strings.Repeat("a", 70<<10)); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized form status=%d", rec.Code)
+	}
+
+	// Unsupported mutation routes.
+	if rec := f.post(f.base+"panel.png", "x=1"); rec.Code != http.StatusNotFound {
+		t.Fatalf("png post status=%d", rec.Code)
+	}
+	if rec := f.post(f.base+"api/Bots", "x=1"); rec.Code != http.StatusNotFound {
+		t.Fatalf("bad api name status=%d", rec.Code)
+	}
+}
+
+func TestPanelPostRelaysChangeAndAct(t *testing.T) {
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1)}
+	fr.panel = func(_ context.Context, _ int64, frame map[string]any) (*relay.PanelResult, error) {
+		if frame["op"] == "change" {
+			return &relay.PanelResult{Status: 200, ContentType: "application/json; charset=utf-8", Body: []byte(`{"ok":true,"note":"saved"}`)}, nil
+		}
+		return &relay.PanelResult{Status: 204, ContentType: "text/plain; charset=utf-8"}, nil
+	}
+	f := newPanelFixture(t, fr)
+
+	rec := f.post(f.base+"api/bots", "enabled=true&count=3")
+	if rec.Code != 200 || rec.Body.String() != `{"ok":true,"note":"saved"}` {
+		t.Fatalf("change status=%d body=%s", rec.Code, rec.Body)
+	}
+	if rec.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+		t.Fatalf("change content-type=%q", rec.Header().Get("Content-Type"))
+	}
+	last := fr.frames[len(fr.frames)-1]
+	form, ok := last["form"].(map[string]string)
+	if last["op"] != "change" || last["name"] != "bots" || !ok || form["enabled"] != "true" || form["count"] != "3" {
+		t.Fatalf("change frame=%+v", last)
+	}
+
+	if rec := f.post(f.base+"act", "id=tune:set&text=hello"); rec.Code != 204 {
+		t.Fatalf("text act status=%d body=%s", rec.Code, rec.Body)
+	}
+	act := fr.frames[len(fr.frames)-1]["act"].(map[string]any)
+	if act["id"] != "tune:set" || act["text"] != "hello" {
+		t.Fatalf("text act=%+v", act)
+	}
+	if _, has := act["value"]; has {
+		t.Fatalf("text act also carried a value: %+v", act)
+	}
+
+	if rec := f.post(f.base+"act", "id=ctl:start&value=run"); rec.Code != 204 {
+		t.Fatalf("value act status=%d", rec.Code)
+	}
+	act = fr.frames[len(fr.frames)-1]["act"].(map[string]any)
+	if act["id"] != "ctl:start" || act["value"] != "run" {
+		t.Fatalf("value act=%+v", act)
+	}
+	if _, has := act["text"]; has {
+		t.Fatalf("value act also carried text: %+v", act)
+	}
+}
+
+func TestPanelErrorsMapToStatuses(t *testing.T) {
+	cases := []struct {
+		err  error
+		want int
+	}{
+		{relay.ErrOffline, http.StatusServiceUnavailable},
+		{relay.ErrTimeout, http.StatusGatewayTimeout},
+		{relay.ErrBusy, http.StatusTooManyRequests},
+		{relay.ErrNoPanel, http.StatusNotImplemented},
+		{errors.New("boom"), http.StatusBadGateway},
+	}
+	for _, c := range cases {
+		fr := &fakeRelay{online: true, updates: make(chan struct{}, 1)}
+		fr.panel = func(context.Context, int64, map[string]any) (*relay.PanelResult, error) {
+			return nil, c.err
+		}
+		f := newPanelFixture(t, fr)
+		if rec := f.get(f.base + "state"); rec.Code != c.want {
+			t.Fatalf("%v status=%d want %d", c.err, rec.Code, c.want)
+		}
+	}
+
+	// A refused status is relayed, not invented.
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1)}
+	fr.panel = func(context.Context, int64, map[string]any) (*relay.PanelResult, error) {
+		return &relay.PanelResult{Status: 404, ContentType: "text/plain; charset=utf-8"}, nil
+	}
+	f := newPanelFixture(t, fr)
+	if rec := f.get(f.base + "api/missing"); rec.Code != 404 {
+		t.Fatalf("refused status=%d", rec.Code)
+	}
+}
+
+func TestPanelAnonymousAndBadIDs(t *testing.T) {
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1), panel: pageRelay()}
+	f := newPanelFixture(t, fr)
+
+	// Anonymous page requests go to the sign-in dashboard.
+	rec := f.do(httptest.NewRequest("GET", f.base, nil))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("anonymous page status=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+	// Anonymous data requests are not found.
+	if rec := f.do(httptest.NewRequest("GET", f.base+"state", nil)); rec.Code != http.StatusNotFound {
+		t.Fatalf("anonymous state status=%d", rec.Code)
+	}
+	// Unknown and malformed ids are not found.
+	for _, path := range []string{"/dashboard/panel/abc/", "/dashboard/panel/9999/", "/dashboard/panel/0/"} {
+		if rec := f.get(path); rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status=%d", path, rec.Code)
+		}
+	}
+}
+
+func TestPanelCacheBoundsAndExpiry(t *testing.T) {
+	c := newPanelCache(8)
+	c.putAsset("a", []byte("12345"), "image/png", time.Minute)
+	if a, ok := c.asset("a"); !ok || string(a.body) != "12345" || a.contentType != "image/png" {
+		t.Fatalf("asset=%+v ok=%v", a, ok)
+	}
+
+	// Adding past the cap clears the asset cache rather than growing forever.
+	c.putAsset("b", []byte("12345678"), "image/png", time.Minute)
+	if _, ok := c.asset("a"); ok {
+		t.Fatal("asset cache was not cleared when it exceeded max")
+	}
+	if c.bytes > c.max {
+		t.Fatalf("cache bytes=%d max=%d", c.bytes, c.max)
+	}
+
+	// Expired entries are misses, and a stored body is not aliased.
+	c.putAsset("c", []byte("x"), "image/png", -time.Second)
+	if _, ok := c.asset("c"); ok {
+		t.Fatal("expired asset served")
+	}
+	c.putPage("p|b", "<html></html>", -time.Second)
+	if _, ok := c.page("p|b"); ok {
+		t.Fatal("expired page served")
+	}
+	c.putPage("live|b", "<html></html>", time.Minute)
+	if body, ok := c.page("live|b"); !ok || body != "<html></html>" {
+		t.Fatalf("page=%q ok=%v", body, ok)
+	}
+	body := []byte("abc")
+	c.putAsset("d", body, "image/png", time.Minute)
+	body[0] = 'x'
+	if a, ok := c.asset("d"); !ok || string(a.body) != "abc" {
+		t.Fatalf("cached asset aliases the caller's slice: %+v", a)
 	}
 }

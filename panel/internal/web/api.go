@@ -118,8 +118,9 @@ func hasProtocol(list []int, want int) bool {
 	return false
 }
 
-// The dashboard, SSE, command, and panel handlers are implemented in later
-// tasks; until then they answer 501 so the route table stays complete.
+// The dashboard, SSE, and command handlers are implemented in later tasks;
+// until then they answer 501 so the route table stays complete. The panel
+// handlers live in panel.go.
 
 func (s *Server) apiState(w http.ResponseWriter, r *http.Request)    { notImplemented(w) }
 func (s *Server) apiPairCode(w http.ResponseWriter, r *http.Request) { notImplemented(w) }
@@ -127,6 +128,3 @@ func (s *Server) apiCommand(w http.ResponseWriter, r *http.Request)  { notImplem
 func (s *Server) apiRename(w http.ResponseWriter, r *http.Request)   { notImplemented(w) }
 func (s *Server) apiUnlink(w http.ResponseWriter, r *http.Request)   { notImplemented(w) }
 func (s *Server) sse(w http.ResponseWriter, r *http.Request)         { notImplemented(w) }
-func (s *Server) panelPage(w http.ResponseWriter, r *http.Request)   { notImplemented(w) }
-func (s *Server) panelGet(w http.ResponseWriter, r *http.Request)    { notImplemented(w) }
-func (s *Server) panelPost(w http.ResponseWriter, r *http.Request)   { notImplemented(w) }
