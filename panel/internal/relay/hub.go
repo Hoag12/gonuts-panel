@@ -22,17 +22,22 @@ const (
 	defaultPanelTimeout      = 15 * time.Second
 	defaultMaxPanelInFlight  = 8
 	heartbeatSweepInterval   = 5 * time.Second
-	telemetryFlushInterval   = 5 * time.Second
-	helloTimeout             = 10 * time.Second
-	clientSilenceTimeout     = 80 * time.Second
-	writeTimeout             = 10 * time.Second
-	sendBuffer               = 16
-	maxCloseReasonBytes      = 120
-	websocketCloseGoingAway  = 1001
-	websocketCloseProtocol   = 4400
-	websocketCloseForbidden  = 4403
-	websocketCloseHeartbeat  = 4408
-	websocketCloseReplaced   = 4409
+	telemetryFlushInterval   = time.Second
+	persistInterval          = 5 * time.Second
+	// maxReadBytes is the socket read limit. It is independent of
+	// Options.MaxMessageBytes because panel_result frames may carry up to
+	// 768 KiB; telemetry frames are still bounded to 32 KiB by ParseTelemetry.
+	maxReadBytes            = 1 << 20
+	helloTimeout            = 10 * time.Second
+	clientSilenceTimeout    = 80 * time.Second
+	writeTimeout            = 10 * time.Second
+	sendBuffer              = 16
+	maxCloseReasonBytes     = 120
+	websocketCloseGoingAway = 1001
+	websocketCloseProtocol  = 4400
+	websocketCloseForbidden = 4403
+	websocketCloseHeartbeat = 4408
+	websocketCloseReplaced  = 4409
 )
 
 // The values below mirror the protocol-1 contract advertised after pairing.
@@ -51,12 +56,17 @@ type Options struct {
 // Hub owns the live client sockets. It implements the web layer's Relay
 // interface: presence, commands, panel requests, and change notifications.
 //
-// Telemetry is written to the store's in-memory state on every frame; the
-// Start loop flushes it to disk every five seconds and Stop flushes once more.
+// Telemetry is coalesced to at most one stored update per
+// Options.TelemetryMinInterval; the Start loop stores the newest pending frame
+// once a second, persists state every five seconds, and Stop flushes once more.
 type Hub struct {
 	store   *store.Store
 	opts    Options
 	updates chan struct{}
+
+	// flushEvery is the telemetry coalescing tick. It is a field so tests can
+	// drive flushes deterministically; production uses one second.
+	flushEvery time.Duration
 
 	mu       sync.Mutex
 	clients  map[int64]*client
@@ -83,6 +93,13 @@ type client struct {
 	closed         chan struct{}
 	once           sync.Once
 	writeMu        sync.Mutex
+
+	// Telemetry is coalesced: the first frame is stored immediately, frames
+	// inside Options.TelemetryMinInterval replace pendingTelemetry, and the
+	// hub tick stores the newest pending frame once per interval.
+	telemetryMu      sync.Mutex
+	pendingTelemetry *store.Telemetry
+	lastTelemetryAt  time.Time
 }
 
 var upgrader = websocket.Upgrader{
@@ -92,8 +109,26 @@ var upgrader = websocket.Upgrader{
 }
 
 // NewHub builds a hub around st, filling zero options with the protocol
-// defaults.
+// defaults. It also clears persisted presence flags: after a crash no socket is
+// live, so any stored "online" value is stale until a client reconnects.
 func NewHub(st *store.Store, opts Options) *Hub {
+	opts = normalizeOptions(opts)
+	if st != nil {
+		_ = st.ClearOnline()
+	}
+	return &Hub{
+		store:      st,
+		opts:       opts,
+		updates:    make(chan struct{}, 1),
+		flushEvery: telemetryFlushInterval,
+		clients:    map[int64]*client{},
+		stopCh:     make(chan struct{}),
+		done:       make(chan struct{}),
+	}
+}
+
+// normalizeOptions replaces zero option values with the contract defaults.
+func normalizeOptions(opts Options) Options {
 	if opts.HeartbeatSeconds <= 0 {
 		opts.HeartbeatSeconds = defaultHeartbeatSeconds
 	}
@@ -109,14 +144,7 @@ func NewHub(st *store.Store, opts Options) *Hub {
 	if opts.MaxPanelInFlight <= 0 {
 		opts.MaxPanelInFlight = defaultMaxPanelInFlight
 	}
-	return &Hub{
-		store:   st,
-		opts:    opts,
-		updates: make(chan struct{}, 1),
-		clients: map[int64]*client{},
-		stopCh:  make(chan struct{}),
-		done:    make(chan struct{}),
-	}
+	return opts
 }
 
 // Start runs the heartbeat sweep and the telemetry flush loop until ctx is
@@ -136,8 +164,14 @@ func (h *Hub) Start(ctx context.Context) {
 
 	sweep := time.NewTicker(heartbeatSweepInterval)
 	defer sweep.Stop()
-	flush := time.NewTicker(telemetryFlushInterval)
-	defer flush.Stop()
+	flushEvery := h.flushEvery
+	if flushEvery <= 0 {
+		flushEvery = telemetryFlushInterval
+	}
+	telemetry := time.NewTicker(flushEvery)
+	defer telemetry.Stop()
+	persist := time.NewTicker(persistInterval)
+	defer persist.Stop()
 	for {
 		select {
 		case <-h.stopCh:
@@ -146,7 +180,9 @@ func (h *Hub) Start(ctx context.Context) {
 			return
 		case now := <-sweep.C:
 			h.sweep(now)
-		case <-flush.C:
+		case <-telemetry.C:
+			h.flushTelemetry()
+		case <-persist.C:
 			h.flush()
 		}
 	}
@@ -178,6 +214,10 @@ func (h *Hub) Stop() {
 		c.closeWith(websocketCloseGoingAway, "server shutting down")
 	}
 	h.conns.Wait()
+	// Handlers are done, so any coalesced frame they produced can be stored.
+	for _, c := range clients {
+		h.flushClient(c)
+	}
 	h.flush()
 }
 
@@ -257,7 +297,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 		return
 	}
-	conn.SetReadLimit(int64(h.opts.MaxMessageBytes))
+	conn.SetReadLimit(maxReadBytes)
 
 	c := &client{
 		hub:            h,
@@ -308,7 +348,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 		h.dropClient(c)
 		return
 	}
-	c.sendJSON(Welcome(inst.ID))
+	c.sendJSON(Welcome(inst.ID, h.opts))
 
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(clientSilenceTimeout))
@@ -322,16 +362,19 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	h.dropClient(c)
 }
 
-// Welcome builds the protocol-1 welcome frame. The advertised commands are
-// the ones the relay forwards; optional client features stay off.
-func Welcome(id int64) map[string]any {
+// Welcome builds the protocol-1 welcome frame from the hub's options. The
+// advertised commands are the ones the relay forwards; optional client
+// features stay off.
+func Welcome(id int64, opts Options) map[string]any {
+	opts = normalizeOptions(opts)
 	return map[string]any{
 		"type":                   "welcome",
 		"protocol":               1,
 		"installationId":         id,
-		"heartbeatSeconds":       defaultHeartbeatSeconds,
-		"telemetryMinIntervalMs": defaultTelemetryInterval.Milliseconds(),
-		"maxMessageBytes":        defaultMaxMessageBytes,
+		"heartbeatSeconds":       opts.HeartbeatSeconds,
+		"telemetryMinIntervalMs": opts.TelemetryMinInterval.Milliseconds(),
+		"maxMessageBytes":        opts.MaxMessageBytes,
+		"panelTimeoutMs":         opts.PanelTimeout.Milliseconds(),
 		"commands":               append([]string{}, welcomeCommands...),
 	}
 }
@@ -373,13 +416,14 @@ func (h *Hub) handleFrame(c *client, data []byte) {
 			}
 			return
 		}
-		if err := h.store.SetTelemetry(c.installationID, tel, time.Now()); err == nil {
-			h.notify()
-		}
+		c.queueTelemetry(tel)
 
 	case "ack":
 		if env.ID != "" {
-			if err := h.store.UpdateCommand(env.ID, "received", ""); err == nil {
+			// Only the owning installation may move its own command forward;
+			// ack is only legal once the command was delivered.
+			if h.store.TransitionCommand(env.ID, c.installationID,
+				[]string{"delivered"}, "received", "") {
 				h.notify()
 			}
 		}
@@ -390,7 +434,10 @@ func (h *Hub) handleFrame(c *client, data []byte) {
 			if sensitive(reason) {
 				reason = ""
 			}
-			if err := h.store.UpdateCommand(env.ID, env.Status, reason); err == nil {
+			// A result is only legal after the client acknowledged delivery,
+			// and terminal states are never overwritten.
+			if h.store.TransitionCommand(env.ID, c.installationID,
+				[]string{"received"}, env.Status, reason) {
 				h.notify()
 			}
 		}
@@ -436,6 +483,8 @@ func (h *Hub) dropClient(c *client) {
 	if !current {
 		return
 	}
+	// Persist the last coalesced frame before the client disappears.
+	h.flushClient(c)
 	h.notify()
 }
 
@@ -448,6 +497,58 @@ func (h *Hub) notify() {
 
 func (h *Hub) flush() {
 	_ = h.store.SaveNow()
+}
+
+// queueTelemetry stores tel immediately unless a frame was stored less than
+// TelemetryMinInterval ago, in which case it replaces the pending frame. The
+// hub tick writes the newest pending frame once per interval.
+func (c *client) queueTelemetry(tel *store.Telemetry) {
+	now := time.Now()
+	c.telemetryMu.Lock()
+	if !c.lastTelemetryAt.IsZero() &&
+		now.Sub(c.lastTelemetryAt) < c.hub.opts.TelemetryMinInterval {
+		c.pendingTelemetry = tel
+		c.telemetryMu.Unlock()
+		return
+	}
+	c.pendingTelemetry = nil
+	c.lastTelemetryAt = now
+	c.telemetryMu.Unlock()
+	if err := c.hub.store.SetTelemetry(c.installationID, tel, now); err == nil {
+		c.hub.notify()
+	}
+}
+
+// flushTelemetry stores the newest pending frame for every live client.
+func (h *Hub) flushTelemetry() {
+	h.mu.Lock()
+	clients := make([]*client, 0, len(h.clients))
+	for _, c := range h.clients {
+		clients = append(clients, c)
+	}
+	h.mu.Unlock()
+	for _, c := range clients {
+		h.flushClient(c)
+	}
+}
+
+// flushClient stores c's pending frame, if any. The read-and-clear is guarded
+// by telemetryMu so a concurrent tick or disconnect cannot store it twice.
+func (h *Hub) flushClient(c *client) {
+	c.telemetryMu.Lock()
+	tel := c.pendingTelemetry
+	c.pendingTelemetry = nil
+	now := time.Now()
+	if tel != nil {
+		c.lastTelemetryAt = now
+	}
+	c.telemetryMu.Unlock()
+	if tel == nil {
+		return
+	}
+	if err := h.store.SetTelemetry(c.installationID, tel, now); err == nil {
+		h.notify()
+	}
 }
 
 func writeUnauthorized(w http.ResponseWriter) {

@@ -453,6 +453,25 @@ func (s *Store) SetOnline(id int64, online bool, now time.Time) error {
 	return s.persistLocked()
 }
 
+// ClearOnline resets every persisted presence flag. It is called when the
+// relay starts: after a crash no socket is live, so stored "online" values are
+// stale until clients reconnect.
+func (s *Store) ClearOnline() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for _, inst := range s.data.Installations {
+		if inst != nil && inst.Online {
+			inst.Online = false
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.persistLocked()
+}
+
 // SetTelemetry keeps the latest telemetry frame for an installation. The
 // change is only marked dirty; it is written by SaveNow or Close.
 func (s *Store) SetTelemetry(id int64, t *Telemetry, now time.Time) error {
@@ -539,6 +558,49 @@ func (s *Store) UpdateCommand(id, state, reason string) error {
 		c.Reason = reason
 	}
 	return s.persistLocked()
+}
+
+// Command returns a copy of one command, or nil when it is unknown.
+func (s *Store) Command(id string) *Command {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.data.Commands[id]
+	if !ok || c == nil {
+		return nil
+	}
+	cp := *c
+	return &cp
+}
+
+// TransitionCommand moves a command owned by installationID from one of the
+// from states to to. Unknown commands, commands owned by another installation,
+// and illegal transitions are ignored. It reports whether a transition
+// happened.
+func (s *Store) TransitionCommand(id string, installationID int64, from []string, to, reason string) bool {
+	if id == "" || len(from) == 0 {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.data.Commands[id]
+	if !ok || c == nil || c.InstallationID != installationID {
+		return false
+	}
+	legal := false
+	for _, state := range from {
+		if c.State == state {
+			legal = true
+			break
+		}
+	}
+	if !legal {
+		return false
+	}
+	c.State = to
+	if reason != "" {
+		c.Reason = reason
+	}
+	return s.persistLocked() == nil
 }
 
 // LastCommand returns a copy of the newest command for an installation, or nil
