@@ -661,15 +661,25 @@ func TestPanelGetMapsPathsAndCachesAssets(t *testing.T) {
 		t.Fatalf("data frame=%+v", last)
 	}
 
-	// Binary routes are cached, so the second request costs no frame.
-	pngRec := f.get(f.base + "panel.png")
-	if pngRec.Code != 200 || pngRec.Header().Get("Content-Type") != "image/png" ||
-		!bytes.Equal(pngRec.Body.Bytes(), []byte{0x89, 'P', 'N', 'G'}) {
-		t.Fatalf("png status=%d type=%q body=%v", pngRec.Code, pngRec.Header().Get("Content-Type"), pngRec.Body.Bytes())
+	// panel.png is a live view, so both requests relay a fresh png frame.
+	for i := 0; i < 2; i++ {
+		rec := f.get(f.base + "panel.png")
+		if rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" ||
+			!bytes.Equal(rec.Body.Bytes(), []byte{0x89, 'P', 'N', 'G'}) {
+			t.Fatalf("png %d status=%d type=%q body=%v", i, rec.Code, rec.Header().Get("Content-Type"), rec.Body.Bytes())
+		}
+		if png := fr.frames[len(fr.frames)-1]; png["op"] != "png" {
+			t.Fatalf("png %d frame=%+v", i, png)
+		}
 	}
-	before := len(fr.frames)
-	if rec := f.get(f.base + "panel.png"); rec.Code != 200 || len(fr.frames) != before {
-		t.Fatalf("png not cached: status=%d frames=%d want %d", rec.Code, len(fr.frames), before)
+	pngOps := 0
+	for _, frame := range fr.frames {
+		if frame["op"] == "png" {
+			pngOps++
+		}
+	}
+	if pngOps != 2 {
+		t.Fatalf("png frames=%d, want 2 fresh relays", pngOps)
 	}
 
 	if rec := f.get(f.base + "item/minecraft:stone.png"); rec.Code != 200 {
@@ -678,6 +688,11 @@ func TestPanelGetMapsPathsAndCachesAssets(t *testing.T) {
 	icon := fr.frames[len(fr.frames)-1]
 	if icon["op"] != "icon" || icon["item"] != "minecraft:stone" {
 		t.Fatalf("icon frame=%+v", icon)
+	}
+	// Icons stay cached, so a repeat costs no frame.
+	iconFrames := len(fr.frames)
+	if rec := f.get(f.base + "item/minecraft:stone.png"); rec.Code != 200 || len(fr.frames) != iconFrames {
+		t.Fatalf("icon not cached: status=%d frames=%d want %d", rec.Code, len(fr.frames), iconFrames)
 	}
 
 	if rec := f.get(f.base + "logo.png"); rec.Code != 200 {
@@ -701,6 +716,50 @@ func TestPanelGetMapsPathsAndCachesAssets(t *testing.T) {
 		if rec := f.get(f.base + path); rec.Code != 404 {
 			t.Fatalf("%s status=%d body=%s", path, rec.Code, rec.Body)
 		}
+	}
+}
+
+func TestPanelImageIsNeverCached(t *testing.T) {
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1)}
+	pngs := 0
+	fr.panel = func(_ context.Context, _ int64, frame map[string]any) (*relay.PanelResult, error) {
+		switch frame["op"] {
+		case "png":
+			pngs++
+			return &relay.PanelResult{Status: 200, ContentType: "image/png",
+				Body: []byte{0x89, 'P', 'N', 'G', byte(pngs)}}, nil
+		case "asset":
+			return &relay.PanelResult{Status: 200, ContentType: "font/ttf", Body: []byte{9}}, nil
+		}
+		return &relay.PanelResult{Status: 404, ContentType: "text/plain; charset=utf-8"}, nil
+	}
+	f := newPanelFixture(t, fr)
+
+	// The mod appends ?t= to panel.png. The query is not part of the route, and
+	// every request must relay its own png op instead of a cached body.
+	first := f.get(f.base + "panel.png?t=1000")
+	second := f.get(f.base + "panel.png?t=2000")
+	for i, rec := range []*httptest.ResponseRecorder{first, second} {
+		if rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" {
+			t.Fatalf("png %d status=%d type=%q", i, rec.Code, rec.Header().Get("Content-Type"))
+		}
+	}
+	if pngs != 2 || len(fr.frames) != 2 {
+		t.Fatalf("png relays=%d frames=%d, want 2 fresh frames", pngs, len(fr.frames))
+	}
+	if !bytes.Equal(first.Body.Bytes(), []byte{0x89, 'P', 'N', 'G', 1}) ||
+		!bytes.Equal(second.Body.Bytes(), []byte{0x89, 'P', 'N', 'G', 2}) {
+		t.Fatalf("png bodies=%v / %v, want two distinct fresh frames", first.Body.Bytes(), second.Body.Bytes())
+	}
+
+	// The logo/font assets keep the asset cache: a repeat costs no frame.
+	for i := 0; i < 2; i++ {
+		if rec := f.get(f.base + "font.ttf"); rec.Code != 200 {
+			t.Fatalf("font %d status=%d", i, rec.Code)
+		}
+	}
+	if len(fr.frames) != 3 {
+		t.Fatalf("font frames=%d, want one relay plus one cache hit", len(fr.frames))
 	}
 }
 

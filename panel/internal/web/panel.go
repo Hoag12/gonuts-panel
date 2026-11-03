@@ -256,8 +256,9 @@ func (s *Server) panelPage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(panel.Rewrite(raw, sess.CSRF)))
 }
 
-// panelGet relays panel data, images, icons, and assets. State is never cached;
-// binary responses are cached per installation and path.
+// panelGet relays panel data, images, icons, and assets. State and the live
+// panel image are never cached; stable binaries are cached per installation
+// and path.
 func (s *Server) panelGet(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.panelSession(r)
 	if !ok {
@@ -274,7 +275,7 @@ func (s *Server) panelGet(w http.ResponseWriter, r *http.Request) {
 	case path == "state":
 		s.panelData(w, r, inst.ID, map[string]any{"op": "state"})
 	case path == "panel.png":
-		s.panelAsset(w, r, inst.ID, path, map[string]any{"op": "png"})
+		s.panelImage(w, r, inst.ID)
 	case strings.HasPrefix(path, "api/"):
 		name := strings.TrimPrefix(path, "api/")
 		if !panelNamePattern.MatchString(name) {
@@ -360,13 +361,33 @@ func (s *Server) panelData(w http.ResponseWriter, r *http.Request, id int64, fra
 	writePanelBody(w, res.Body, safePanelContentType(res.ContentType), "no-store")
 }
 
-// panelAsset relays and caches a binary panel response.
+// panelAsset relays and caches a stable binary panel response. Item icons and
+// the logo/font assets only change with the client build, so they are reused
+// for panelAssetTTL.
 func (s *Server) panelAsset(w http.ResponseWriter, r *http.Request, id int64, path string, frame map[string]any) {
 	key := fmt.Sprintf("%d|%s", id, path)
 	if cached, ok := s.PanelCache.asset(key); ok {
 		writePanelBody(w, cached.body, cached.contentType, "private, max-age=300")
 		return
 	}
+	s.panelBinary(w, r, id, frame, func(body []byte, contentType string) {
+		if len(body) > 0 {
+			s.PanelCache.putAsset(key, body, contentType, panelAssetTTL)
+		}
+	})
+}
+
+// panelImage relays the live panel image. The mod appends ?t= to panel.png to
+// defeat the browser cache, but the server cache key is path-only; caching the
+// image there froze the image and summary view for the whole TTL. The image
+// therefore bypasses the asset cache: every request relays a fresh "png" op.
+func (s *Server) panelImage(w http.ResponseWriter, r *http.Request, id int64) {
+	s.panelBinary(w, r, id, map[string]any{"op": "png"}, nil)
+}
+
+// panelBinary relays one binary panel response and hands a successful body to
+// store when it is non-nil. It never caches on its own.
+func (s *Server) panelBinary(w http.ResponseWriter, r *http.Request, id int64, frame map[string]any, store func(body []byte, contentType string)) {
 	res, err := s.Hub.PanelRequest(r.Context(), id, frame)
 	if err != nil {
 		s.writePanelFailure(w, err)
@@ -381,8 +402,8 @@ func (s *Server) panelAsset(w http.ResponseWriter, r *http.Request, id int64, pa
 		return
 	}
 	contentType := safePanelContentType(res.ContentType)
-	if len(res.Body) > 0 {
-		s.PanelCache.putAsset(key, res.Body, contentType, panelAssetTTL)
+	if store != nil {
+		store(res.Body, contentType)
 	}
 	writePanelBody(w, res.Body, contentType, "private, max-age=300")
 }
