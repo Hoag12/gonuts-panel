@@ -1,0 +1,10 @@
+This repository contains a self-hosted panel for GoNuts and a patched mod
+link module.
+
+GoNuts is MIT licensed, Copyright (c) 2026 cody-raves. See LICENSE.
+
+The bundled Monocraft font is licensed under the SIL Open Font License; see
+panel/web/assets/Monocraft-OFL.txt.
+
+The Go panel source is a new work built around the public GoNuts protocol
+documentation and the MIT-licensed GoNuts client sources.

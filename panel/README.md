@@ -198,3 +198,8 @@ Then open <http://localhost:8080> and use the dev sign-in link. `GONUTS_DEV_LOGI
 mints a session without Discord, so it is refused unless explicitly set, it is
 rejected unless `GONUTS_PUBLIC_BASE_URL` is loopback (`localhost`, `127.0.0.1`,
 or `[::1]`), and the deployment `.env.example` pins it to `0`.
+
+## Release packaging
+
+See [panel/deploy/RELEASE-ARTIFACTS.md](deploy/RELEASE-ARTIFACTS.md) for the release asset list. The optional `gonuts-panel.jar`
+requires Java 17+ on Linux and bundles the arm64 and amd64 panel binaries.
