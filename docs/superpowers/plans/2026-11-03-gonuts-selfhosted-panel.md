@@ -21,7 +21,12 @@
 - Browser mutations require a session, `X-Gonuts-Csrf`, and a matching `Origin`/`Referer`.
 - The relayed panel HTML is the mod's `Pages.APP`; only URL/CSRF plumbing may change.
 - The mod's `0.1.2-swarm+26.2` version, layout, and styles do not change. Only the link module, endpoint derivation, and the two host/Swarm text strings change.
-- Do not touch the NAS until the user approves deployment.
+- Immediate runtime is a GitHub Codespace with a public forwarded HTTPS port;
+  `PUBLIC_BASE_URL` is `https://${CODESPACE_NAME}-8080.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}`.
+  The NAS (LAN HTTP) is a later target and is not touched until the user approves.
+- Discord OAuth requires an HTTPS callback; the Codespace URL satisfies this.
+- The mod link accepts HTTP only for loopback and RFC1918 private addresses,
+  so a later LAN NAS URL works; all public origins must be HTTPS.
 - Every task ends with `go test ./...` passing, a focused test for the new behavior, and a commit.
 
 ## File Structure
@@ -2602,6 +2607,8 @@ class RelayLinkTest {
         assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("https://panel.example.com/x"));
         assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("http://example.com"));
         assertEquals("http://localhost:8080", RelayLink.normalize("http://localhost:8080/"));
+        assertEquals("http://192.168.1.50:8080", RelayLink.normalize("http://192.168.1.50:8080/"));
+        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("http://203.0.113.5:8080"));
     }
     @Test void disabledByDefault() {
         RelayLink.setForTest("");
@@ -2646,8 +2653,15 @@ public final class RelayLink {
         if(u.getHost()==null||u.getHost().isBlank())throw new IllegalArgumentException("base URL needs a host");
         if(u.getRawPath()!=null&&!u.getRawPath().isEmpty()&&!u.getRawPath().equals("/"))throw new IllegalArgumentException("base URL must not have a path");
         if(u.getRawQuery()!=null||u.getRawFragment()!=null||u.getUserInfo()!=null)throw new IllegalArgumentException("base URL must be an origin");
-        if(u.getScheme().equals("http")&&!java.util.Set.of("localhost","127.0.0.1","::1").contains(u.getHost().toLowerCase(java.util.Locale.ROOT)))throw new IllegalArgumentException("http is only allowed for localhost");
+        if(u.getScheme().equals("http")&&!privateHost(u.getHost()))throw new IllegalArgumentException("http is only allowed for localhost or a private LAN address");
         return u.getScheme()+"://"+u.getHost()+(u.getPort()>0?":"+u.getPort():"");
+    }
+    private static boolean privateHost(String host){
+        String h=host.toLowerCase(java.util.Locale.ROOT);
+        return h.equals("localhost")||h.equals("127.0.0.1")||h.equals("::1")
+            ||h.matches("10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}")
+            ||h.matches("192\\.168\\.\\d{1,3}\\.\\d{1,3}")
+            ||h.matches("172\\.(1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}");
     }
 }
 ```
@@ -2721,12 +2735,62 @@ git commit -m "feat(mod): configurable self-hosted dashboard link"
 ### Task 12: Deployment artifacts, ARM64 build, and final verification
 
 **Files:**
+- Create: `.devcontainer/devcontainer.json`
+- Create: `scripts/codespace.sh`
 - Create: `panel/Dockerfile`
 - Create: `panel/docker-compose.yml`
 - Create: `panel/.env.example`
 - Create: `panel/README.md`
 - Output: `panel/dist/gonuts-panel-linux-arm64`
 - Modify: `.gitignore`
+
+- [ ] **Step 0: Codespace runtime**
+
+Create `.devcontainer/devcontainer.json`:
+
+```json
+{
+  "name": "GoNuts panel",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.27" }
+  },
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": { "label": "GoNuts panel", "visibility": "public", "onAutoForward": "notify" }
+  },
+  "postCreateCommand": "cd panel && go mod download"
+}
+```
+
+Create `scripts/codespace.sh` (chmod +x):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+: "${GONUTS_DISCORD_CLIENT_ID:?set GONUTS_DISCORD_CLIENT_ID}"
+: "${GONUTS_DISCORD_CLIENT_SECRET:?set GONUTS_DISCORD_CLIENT_SECRET}"
+export GONUTS_PUBLIC_BASE_URL="https://${CODESPACE_NAME}-8080.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}"
+export GONUTS_COOKIE_SECURE=1
+export GONUTS_TRUST_PROXY=1
+export GONUTS_DATA_DIR="${GONUTS_DATA_DIR:-$PWD/panel/data}"
+cd panel
+go test ./...
+exec go run ./cmd/gonuts-panel
+```
+
+Codespace run:
+
+1. Open the repo in a Codespace; wait for the Go feature and `go mod download`.
+2. In GitHub → Settings → Developer settings → your Discord app, add the
+   redirect `https://${CODESPACE_NAME}-8080.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}/auth/callback`.
+3. Set `GONUTS_DISCORD_CLIENT_ID` and `GONUTS_DISCORD_CLIENT_SECRET` in the
+   Codespace terminal or as Codespaces secrets.
+4. Run `./scripts/codespace.sh`.
+5. In the Ports tab, confirm port 8080 is **Public**; open the forwarded URL.
+6. Mod config: `{"baseUrl":"https://<codespace>-8080.app.github.dev"}`.
+7. If the Codespace is recreated, update the Discord redirect to the new URL.
 
 - [ ] **Step 1: Write Dockerfile**
 

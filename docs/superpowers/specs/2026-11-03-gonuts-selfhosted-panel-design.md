@@ -36,7 +36,11 @@ panel itself is not reconstructed: it is the mod's own page, relayed.
 - Add a link module to the mod; do not redesign the mod UI.
 - Sign in with Discord.
 - Test before production.
-- Ask before deploying to the Synology NAS (512 MB RAM, ARM CPU).
+- Immediate runtime: run in a GitHub Codespace with a public forwarded HTTPS
+  port. This gives Discord a valid HTTPS callback and the mod a WSS endpoint
+  without a domain.
+- Later target: the Synology NAS (512 MB RAM, ARM CPU) over LAN HTTP. Ask
+  before deploying there.
 
 ## 2. Goals
 
@@ -568,9 +572,29 @@ Applied to a working copy of the upstream source.
 6. Discord OAuth callback works with the production URL.
 7. No secrets in logs; CSRF/origin/rate-limit checks exercised.
 
-## 13. Deployment (to confirm with the user later)
+## 13. Deployment
 
-Do not touch the NAS until the user approves. Prepare:
+### Immediate: GitHub Codespace
+
+- Run the Go server directly in the Codespace on port `8080`.
+- Make the forwarded port public. `PUBLIC_BASE_URL` is the forwarded HTTPS
+  origin `https://${CODESPACE_NAME}-8080.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}`.
+- Discord redirect URI is `${PUBLIC_BASE_URL}/auth/callback`.
+- Set `GONUTS_COOKIE_SECURE=1` and `GONUTS_TRUST_PROXY=1`.
+- Mod link base URL is the same HTTPS origin; it derives `wss://`.
+- A `.devcontainer/devcontainer.json` and `scripts/codespace.sh` document the
+  exact setup. The Codespace URL changes if the Codespace is recreated, so the
+  Discord redirect URI must be updated then.
+
+### Later: Synology NAS
+
+Do not touch the NAS until the user approves. The NAS target may use plain
+HTTP on the LAN (`http://<LAN-IP>:<port>`); the relay and mod link support
+loopback and RFC1918 private HTTP origins for that case. Discord OAuth cannot
+use a non-localhost HTTP callback, so the NAS needs either a local
+password/PIN sign-in, an SSH tunnel to a localhost callback, or HTTPS.
+
+Prepare:
 
 - A static ARM64 binary and a minimal Docker image (`scratch`/distroless or
   `alpine`; no build tools).
