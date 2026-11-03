@@ -1,0 +1,292 @@
+diff --git a/trader-fabric/src/main/java/dev/doughbay/fabric/DashboardScreen.java b/trader-fabric/src/main/java/dev/doughbay/fabric/DashboardScreen.java
+index d2166a6..d96e789 100644
+--- a/trader-fabric/src/main/java/dev/doughbay/fabric/DashboardScreen.java
++++ b/trader-fabric/src/main/java/dev/doughbay/fabric/DashboardScreen.java
+@@ -23,7 +23,7 @@ public final class DashboardScreen extends GoNutsScreen {
+     @Override protected void init(){
+         DoughBayClient.automationSessionController().setPanelOpen(true);
+         int x=left()+12,w=panelWidth()-24;
+-        addRenderableWidget(CockpitButton.builder(Component.literal("Open dashboard website"),b->Util.getPlatform().openUri(DashboardProtocol.PAGE)).bounds(x,websiteY(),w,18).build());
++        addRenderableWidget(CockpitButton.builder(Component.literal("Open dashboard website"),b->Util.getPlatform().openUri(DashboardProtocol.page())).bounds(x,websiteY(),w,18).build());
+         code=new EditBox(font,x,codeY(),w,18,Component.literal("Pairing code"));code.setMaxLength(16);code.setValue(codeDraft);code.setHint(Component.literal("K7PQ-M3ZD"));code.setResponder(v->codeDraft=v);addRenderableWidget(code);
+         name=new EditBox(font,x,nameY(),w,18,Component.literal("Client label"));name.setMaxLength(48);name.setValue(nameDraft);name.setResponder(v->nameDraft=v);addRenderableWidget(name);
+         link=CockpitButton.builder(Component.literal("Link with code"),b->{HostedDashboardClient.INSTANCE.pair(codeDraft,nameDraft);codeDraft="";code.setValue("");}).bounds(x,linkY(),w,18).build();addRenderableWidget(link);
+@@ -37,13 +37,13 @@ public final class DashboardScreen extends GoNutsScreen {
+         var view=HostedDashboardClient.INSTANCE.view();boolean idle=!view.busy();
+         link.active=idle&&!view.linked()&&System.currentTimeMillis()>=view.retryAt();code.active=name.active=idle&&!view.linked();retry.active=unlink.active=idle&&view.linked();
+         g.text(font,"HOSTED DASHBOARD",x,compact()?6:14,UiTheme.GOLD);
+-        g.text(font,UiTheme.fit(font,"Sign in on gonuts.at, choose Link client, then enter its code.",w),x,compact()?19:30,UiTheme.SECONDARY);
++        g.text(font,UiTheme.fit(font,"Sign in on "+RelayLink.hostLabel()+", choose Link client, then enter its code.",w),x,compact()?19:30,UiTheme.SECONDARY);
+         g.text(font,"Pairing code (expires after five minutes)",x,codeY()-12,UiTheme.TEXT);
+         g.text(font,"Client label (shown on your dashboard)",x,nameY()-12,UiTheme.TEXT);
+         int y=compact()?194:230;
+         if(view.linked()){g.text(font,UiTheme.fit(font,"Linked as: "+view.name(),w),x,y,UiTheme.TEXT);y+=17;}
+         for(var line:font.split(Component.literal(view.status()),w)){if(y>=height-(compact()?56:76))break;g.text(font,line,x,y,view.online()?UiTheme.GOOD:UiTheme.SECONDARY);y+=12;}
+-        g.text(font,UiTheme.fit(font,"Linking joins Swarm: share public market data and receive discovery hints.",w),x,height-68,UiTheme.MUTED);
++        g.text(font,UiTheme.fit(font,"Linking connects this bot to your self-hosted dashboard.",w),x,height-68,UiTheme.MUTED);
+         if(!compact())g.text(font,UiTheme.fit(font,"Local unlink disconnects it; remove the entry on the website too.",w),x,height-54,UiTheme.MUTED);
+         super.extractRenderState(g,mx,my,delta);
+     }
+diff --git a/trader-fabric/src/main/java/dev/doughbay/fabric/DashboardWebsiteAccess.java b/trader-fabric/src/main/java/dev/doughbay/fabric/DashboardWebsiteAccess.java
+index f746d36..1891009 100644
+--- a/trader-fabric/src/main/java/dev/doughbay/fabric/DashboardWebsiteAccess.java
++++ b/trader-fabric/src/main/java/dev/doughbay/fabric/DashboardWebsiteAccess.java
+@@ -15,12 +15,12 @@ final class DashboardWebsiteAccess {
+         this.clipboard = clipboard;
+     }
+ 
+-    String address() { return DashboardProtocol.PAGE.toASCIIString(); }
++    String address() { return DashboardProtocol.page().toASCIIString(); }
+     String message() { return message; }
+ 
+     void open() {
+         try {
+-            launcher.accept(DashboardProtocol.PAGE);
++            launcher.accept(DashboardProtocol.page());
+             message = "No browser? Copy this address.";
+         } catch (RuntimeException unavailable) {
+             message = "Browser unavailable. Copy this address.";
+diff --git a/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/DashboardProtocol.java b/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/DashboardProtocol.java
+index c4c0e80..dd085a6 100644
+--- a/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/DashboardProtocol.java
++++ b/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/DashboardProtocol.java
+@@ -9,10 +9,11 @@ import java.nio.charset.StandardCharsets;
+ /** Fixed destination and allowlisted wire projection; no raw log, detail or action text. */
+ public final class DashboardProtocol {
+     public static final ObjectMapper JSON=new ObjectMapper();
+-    public static final URI PAGE=URI.create("https://gonuts.at/dashboard/");
+-    public static final URI REDEEM=URI.create("https://gonuts.at/dashboard/api/pair/redeem");
+-    public static final URI CHECK=URI.create("https://gonuts.at/dashboard/api/client/check");
+-    public static final URI SOCKET=URI.create("wss://gonuts.at/dashboard/ws/client");
++    /** Derived from the configured self-hosted origin; resolved per call so a reload is honored. */
++    public static URI page(){return RelayLink.page();}
++    public static URI redeem(){return RelayLink.redeem();}
++    public static URI check(){return RelayLink.check();}
++    public static URI socket(){return RelayLink.socket();}
+     public static final int MAX_BYTES=32768;
+     public static final int MAX_PANEL_FRAME_BYTES=768*1024;
+     public static final List<String> CAPABILITIES=List.of("pause","resume","snapshot","panel","swarm_enable","swarm_disable","swarm_rank","swarm_staff","read_savings","data_use","settings_analysis","diagnostic_history");
+diff --git a/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/HostedDashboardClient.java b/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/HostedDashboardClient.java
+index 6c0cdda..1f9a0a0 100644
+--- a/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/HostedDashboardClient.java
++++ b/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/HostedDashboardClient.java
+@@ -86,7 +86,7 @@ public final class HostedDashboardClient {
+         }
+     }
+     public synchronized void start(Path game,Path shared,Path db,String currentBuild) {
+-        if(!dev.doughbay.fabric.ProjectStatus.publicServicesEnabled()){view=new View(false,false,false,"",dev.doughbay.fabric.ProjectStatus.RETIRED,0);return;}
++        if(!dev.doughbay.fabric.ProjectStatus.publicServicesEnabled()&&!RelayLink.enabled()){view=new View(false,false,false,"",dev.doughbay.fabric.ProjectStatus.RETIRED,0);return;}
+         if(started)return;started=true;store=new DashboardStore(game);hivePanel=new DashboardHive(shared);database=db;build=DashboardProtocol.build(currentBuild);rankDirectory=game.resolve("gonuts-dashboard/rank-coverage");
+         worker.execute(()->{
+             try{hive=DashboardStore.hive(shared);link=store.load();if(link!=null){view=new View(true,false,false,link.name,"Checking link",0);nextConnect=0;}}
+@@ -102,14 +102,14 @@ public final class HostedDashboardClient {
+         view=new View(false,false,true,"","Linking securely...",0);long operation=epochs.incrementAndGet();
+         worker.execute(()->{
+             try {
+-                var request=HttpRequest.newBuilder(DashboardProtocol.REDEEM).timeout(Duration.ofSeconds(15)).header("Content-Type","application/json")
++                var request=HttpRequest.newBuilder(DashboardProtocol.redeem()).timeout(Duration.ofSeconds(15)).header("Content-Type","application/json")
+                     .POST(HttpRequest.BodyPublishers.ofString(DashboardProtocol.pairing(normalized,name,build,hive).toString())).build();
+                 var response=http.send(request,HttpResponse.BodyHandlers.ofByteArray());
+                 if(operation!=epochs.get())return;
+                 if(response.statusCode()!=201){long retry=response.statusCode()==429?retry(response):0;view=new View(false,false,false,"",DashboardProtocol.pairError(response.statusCode()),retry);return;}
+                 if(response.body().length>DashboardProtocol.MAX_BYTES)throw new IllegalStateException();
+                 var j=DashboardProtocol.JSON.readTree(response.body());
+-                if(j.path("protocol").asInt()!=1||!j.path("wsUrl").asText().equals(DashboardProtocol.SOCKET.toString())||!j.path("checkUrl").asText().equals(DashboardProtocol.CHECK.toString()))throw new IllegalStateException();
++                if(j.path("protocol").asInt()!=1||!j.path("wsUrl").asText().equals(DashboardProtocol.socket().toString())||!j.path("checkUrl").asText().equals(DashboardProtocol.check().toString()))throw new IllegalStateException();
+                 var next=new DashboardStore.Link(j.path("installationId").asLong(),j.path("credential").asText(),j.path("name").asText());
+                 store.save(next);link=next;attempts=0;nextConnect=0;view=new View(true,false,false,next.name,"Linked; connecting",0);
+                 CommunityClient.INSTANCE.dashboardPaired();
+@@ -149,7 +149,7 @@ public final class HostedDashboardClient {
+     public void reconnect(){if(!started||!view.linked()||view.busy())return;SwarmRank.clear();SwarmStaffSightings.INSTANCE.clear();worker.execute(()->{rankingSalt="";publishedAccountId="";epochs.incrementAndGet();commands.disconnected(epoch);panel.disconnected(epoch);attempts=0;nextConnect=0;if(socket!=null)socket.abort();socket=null;welcome=false;connecting=false;});}
+     /** Called on the client thread: only reads already-held figures, never SQL or networking. */
+     public void tick(Minecraft client){
+-        if(!dev.doughbay.fabric.ProjectStatus.publicServicesEnabled())return;
++        if(!dev.doughbay.fabric.ProjectStatus.publicServicesEnabled()&&!RelayLink.enabled())return;
+         DecisionTrace.INSTANCE.observeSettings(System.currentTimeMillis());
+         CommunityClient.INSTANCE.dashboardLinked(view.linked());
+         long now=System.currentTimeMillis();String account=DoughBayClient.account();panelAccount=account;CommunityClient.INSTANCE.account(account);CommunityRegion.tick(client);CommunityClient.INSTANCE.connected(CommunityRegion.donut(client));CommunityPerformance.INSTANCE.tick(CommunityRegion.donut(client),System.nanoTime());
+@@ -234,7 +234,7 @@ public final class HostedDashboardClient {
+     private void connect() {
+         if(link==null)return;connecting=true;welcome=false;readSavingsSupported=false;dataUseSupported=false;settingsAnalysisSupported=false;diagnosticHistory.disconnected();epoch=epochs.incrementAndGet();long own=epoch;
+         view=new View(true,false,false,link.name,"Checking link",0);
+-        var request=HttpRequest.newBuilder(DashboardProtocol.CHECK).timeout(Duration.ofSeconds(10)).header("Authorization","Bearer "+link.credential)
++        var request=HttpRequest.newBuilder(DashboardProtocol.check()).timeout(Duration.ofSeconds(10)).header("Authorization","Bearer "+link.credential)
+             .header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString("{}")).build();
+         http.sendAsync(request,HttpResponse.BodyHandlers.ofByteArray()).whenComplete((r,e)->worker.execute(()->{
+             if(epochs.get()!=own)return;
+@@ -249,7 +249,7 @@ public final class HostedDashboardClient {
+                     link=new DashboardStore.Link(link.installationId,link.credential,currentName);store.save(link);
+                 }
+                 http.newWebSocketBuilder().connectTimeout(Duration.ofSeconds(10)).header("Authorization","Bearer "+link.credential)
+-                    .buildAsync(DashboardProtocol.SOCKET,new Listener(own)).whenComplete((ws,error)->worker.execute(()->{
++                    .buildAsync(DashboardProtocol.socket(),new Listener(own)).whenComplete((ws,error)->worker.execute(()->{
+                         if(epochs.get()!=own){if(ws!=null)ws.abort();return;}
+                         if(error!=null){failed("Dashboard socket unavailable; retrying");return;}
+                         socket=ws;connecting=false;connectedAt=System.currentTimeMillis();lastPing=connectedAt;lastTelemetry=0;lastShape="";writes=CompletableFuture.completedFuture(null);pendingWrites=0;
+diff --git a/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/RelayLink.java b/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/RelayLink.java
+new file mode 100644
+index 0000000..5986662
+--- /dev/null
++++ b/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/RelayLink.java
+@@ -0,0 +1,47 @@
++package dev.doughbay.fabric.hosted;
++
++import java.net.URI;
++
++/** Self-hosted dashboard origin; unset keeps the retired public dashboard as a harmless fallback. */
++public final class RelayLink {
++    private static final String PROPERTY="gonuts.panel.baseUrl", ENV="GONUTS_PANEL_BASE_URL";
++    private static final String LEGACY="https://gonuts.at";
++    private static volatile String base=load();
++    private RelayLink(){}
++    public static boolean enabled(){return base!=null;}
++    private static String effective(){return base!=null?base:LEGACY;}
++    public static URI page(){return URI.create(effective()+"/dashboard/");}
++    public static URI redeem(){return URI.create(effective()+"/dashboard/api/pair/redeem");}
++    public static URI check(){return URI.create(effective()+"/dashboard/api/client/check");}
++    public static URI socket(){return URI.create(effective().replaceFirst("^http","ws")+"/dashboard/ws/client");}
++    public static String hostLabel(){URI u=URI.create(effective());return u.getPort()>0?u.getHost()+":"+u.getPort():u.getHost();}
++    public static synchronized void setForTest(String value){base=normalize(value);}
++    public static synchronized void reload(){base=load();}
++    private static String load(){
++        String v=System.getProperty(PROPERTY);
++        if(v==null||v.isBlank())v=System.getenv(ENV);
++        if(v==null||v.isBlank()){
++            try{var p=net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("gonuts-panel-link.json");
++                if(java.nio.file.Files.isRegularFile(p))v=DashboardProtocol.JSON.readTree(java.nio.file.Files.readString(p)).path("baseUrl").asText("");
++            }catch(Throwable ignored){}
++        }
++        try{return normalize(v);}catch(IllegalArgumentException e){return null;}
++    }
++    static String normalize(String value){
++        if(value==null||value.isBlank())return null;
++        URI u=URI.create(value.strip());
++        if(u.getScheme()==null||!(u.getScheme().equals("https")||u.getScheme().equals("http")))throw new IllegalArgumentException("base URL must be http(s)");
++        if(u.getHost()==null||u.getHost().isBlank())throw new IllegalArgumentException("base URL needs a host");
++        if(u.getRawPath()!=null&&!u.getRawPath().isEmpty()&&!u.getRawPath().equals("/"))throw new IllegalArgumentException("base URL must not have a path");
++        if(u.getRawQuery()!=null||u.getRawFragment()!=null||u.getUserInfo()!=null)throw new IllegalArgumentException("base URL must be an origin");
++        if(u.getScheme().equals("http")&&!privateHost(u.getHost()))throw new IllegalArgumentException("http is only allowed for localhost or a private LAN address");
++        return u.getScheme()+"://"+u.getHost()+(u.getPort()>0?":"+u.getPort():"");
++    }
++    private static boolean privateHost(String host){
++        String h=host.toLowerCase(java.util.Locale.ROOT);
++        return h.equals("localhost")||h.equals("127.0.0.1")||h.equals("::1")
++            ||h.matches("10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}")
++            ||h.matches("192\\.168\\.\\d{1,3}\\.\\d{1,3}")
++            ||h.matches("172\\.(1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}");
++    }
++}
+diff --git a/trader-fabric/src/test/java/dev/doughbay/fabric/DashboardWebsiteAccessTest.java b/trader-fabric/src/test/java/dev/doughbay/fabric/DashboardWebsiteAccessTest.java
+index d9769db..be0fa78 100644
+--- a/trader-fabric/src/test/java/dev/doughbay/fabric/DashboardWebsiteAccessTest.java
++++ b/trader-fabric/src/test/java/dev/doughbay/fabric/DashboardWebsiteAccessTest.java
+@@ -1,18 +1,29 @@
+ package dev.doughbay.fabric;
+ 
++import dev.doughbay.fabric.hosted.RelayLink;
+ import java.util.ArrayList;
+ import java.util.List;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
+ import static org.junit.jupiter.api.Assertions.*;
+ 
+ class DashboardWebsiteAccessTest {
++    @BeforeEach void selfHostedOrigin() {
++        RelayLink.setForTest("https://panel.example.com");
++    }
++
++    @AfterEach void reset() {
++        RelayLink.setForTest(null);
++    }
++
+     @Test void silentLauncherDoesNotClaimSuccessAndManualCopyStillWorks() {
+         List<String> copied = new ArrayList<>();
+         DashboardWebsiteAccess access = new DashboardWebsiteAccess(uri -> {}, copied::add);
+         access.open();
+         assertEquals("No browser? Copy this address.", access.message());
+         access.copy();
+-        assertEquals(List.of("https://gonuts.at/dashboard/"), copied);
++        assertEquals(List.of("https://panel.example.com/dashboard/"), copied);
+     }
+ 
+     @Test void missingDesktopLauncherCannotEscapeTheGuiCallback() {
+@@ -38,6 +49,6 @@ class DashboardWebsiteAccessTest {
+         });
+         assertDoesNotThrow(access::copy);
+         assertEquals("Copy failed. Type the address above.", access.message());
+-        assertEquals("https://gonuts.at/dashboard/", access.address());
++        assertEquals("https://panel.example.com/dashboard/", access.address());
+     }
+ }
+diff --git a/trader-fabric/src/test/java/dev/doughbay/fabric/hosted/DashboardProtocolTest.java b/trader-fabric/src/test/java/dev/doughbay/fabric/hosted/DashboardProtocolTest.java
+index 2e19812..f8c5331 100644
+--- a/trader-fabric/src/test/java/dev/doughbay/fabric/hosted/DashboardProtocolTest.java
++++ b/trader-fabric/src/test/java/dev/doughbay/fabric/hosted/DashboardProtocolTest.java
+@@ -1,7 +1,9 @@
+ package dev.doughbay.fabric.hosted;
++import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.Test;
+ import static org.junit.jupiter.api.Assertions.*;
+ class DashboardProtocolTest {
++ @AfterEach void reset(){RelayLink.setForTest(null);}
+  @Test void nativeReadOperationsAreNotReportedAsIdle(){
+   var reading=DashboardProtocol.telemetry(1000,"READING_ORDERS","Account",1,20,100,1,"build",false,900);
+   assertEquals("SCANNING",reading.path("state").asText());assertEquals("Reading orders",reading.path("detail").asText());assertEquals("Reading orders",reading.path("lastAction").asText());assertTrue(reading.path("controls").path("pause").asBoolean());
+@@ -9,7 +11,7 @@ class DashboardProtocolTest {
+   assertEquals("MONITORING",audit.path("state").asText());assertEquals("Checking own listings",audit.path("detail").asText());
+  }
+  @Test void contractCodeVectorsAndInvalidInput(){assertEquals("K7PQ-M3ZD",DashboardProtocol.code("k7pq m3zd"));assertEquals("LOLO-LOLO",DashboardProtocol.code("1010-1010"));assertThrows(IllegalArgumentException.class,()->DashboardProtocol.code("ABC"));assertThrows(IllegalArgumentException.class,()->DashboardProtocol.code("ABCD/EFG"));}
+- @Test void credentialsNeverBecomeNamesOrEndpoints(){assertEquals("GoNuts client",DashboardProtocol.label("gni1_"+"A".repeat(43)));assertEquals("GoNuts client",DashboardProtocol.label("C:/Users/private"));assertEquals("GoNuts client",DashboardProtocol.label("/home/private"));assertEquals("Laptop (main)",DashboardProtocol.label("Laptop (main)"));assertEquals("gonuts.at",DashboardProtocol.SOCKET.getHost());assertEquals("wss",DashboardProtocol.SOCKET.getScheme());}
++ @Test void credentialsNeverBecomeNamesOrEndpoints(){assertEquals("GoNuts client",DashboardProtocol.label("gni1_"+"A".repeat(43)));assertEquals("GoNuts client",DashboardProtocol.label("C:/Users/private"));assertEquals("GoNuts client",DashboardProtocol.label("/home/private"));assertEquals("Laptop (main)",DashboardProtocol.label("Laptop (main)"));RelayLink.setForTest("https://panel.example.com");assertEquals("panel.example.com",DashboardProtocol.socket().getHost());assertEquals("wss",DashboardProtocol.socket().getScheme());assertEquals("panel.example.com",DashboardProtocol.page().getHost());assertEquals("panel.example.com",DashboardProtocol.redeem().getHost());assertEquals("panel.example.com",DashboardProtocol.check().getHost());}
+  @Test void projectionIsBoundedAndDoesNotForwardRawControllerDetail(){var j=DashboardProtocol.telemetry(1000,"DRUNK","Account",-5,Long.MAX_VALUE,Long.MAX_VALUE,-1,"build",false,900);assertEquals("UNKNOWN",j.path("state").asText());assertEquals(0,j.path("listed").asInt());assertEquals(1_000_000,j.path("slots").asInt());assertEquals(1_000_000_000_000L,j.path("bank").asLong());assertFalse(j.has("log"));assertFalse(j.has("credential"));assertEquals("Idle",j.path("detail").asText());assertFalse(j.path("controls").path("send_crash_report").asBoolean());}
+  @Test void helloAdvertisesOnlyImplementedCapabilities(){var h=DashboardProtocol.hello("0.1.1","Laptop","hive_123");assertEquals(1,h.path("protocols").get(0).asInt());assertEquals(12,h.path("capabilities").size());assertTrue(h.path("capabilities").toString().contains("diagnostic_history"));assertTrue(h.path("capabilities").toString().contains("settings_analysis"));assertTrue(h.path("capabilities").toString().contains("read_savings"));assertTrue(h.path("capabilities").toString().contains("swarm_staff"));assertTrue(h.path("capabilities").toString().contains("swarm_rank"));assertTrue(h.path("capabilities").toString().contains("swarm_enable"));assertTrue(h.path("capabilities").toString().contains("swarm_disable"));assertFalse(h.toString().contains("send_crash_report"));assertFalse(DashboardProtocol.pairing("K7PQ-M3ZD","Laptop","build","hive_123").has("type"));}
+  @Test void malformedAndOversizeFramesAreRejected(){assertThrows(Exception.class,()->DashboardProtocol.parse("[]"));assertThrows(Exception.class,()->DashboardProtocol.parse("x".repeat(32769)));}
+diff --git a/trader-fabric/src/test/java/dev/doughbay/fabric/hosted/RelayLinkTest.java b/trader-fabric/src/test/java/dev/doughbay/fabric/hosted/RelayLinkTest.java
+new file mode 100644
+index 0000000..e90c869
+--- /dev/null
++++ b/trader-fabric/src/test/java/dev/doughbay/fabric/hosted/RelayLinkTest.java
+@@ -0,0 +1,42 @@
++package dev.doughbay.fabric.hosted;
++
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import static org.junit.jupiter.api.Assertions.*;
++
++class RelayLinkTest {
++    /** The link origin is process-wide; never leak a test origin into another suite. */
++    @AfterEach void reset() { RelayLink.setForTest(null); }
++
++    @Test void derivesEndpoints() {
++        RelayLink.setForTest("https://panel.example.com");
++        assertTrue(RelayLink.enabled());
++        assertEquals("https://panel.example.com/dashboard/", RelayLink.page().toString());
++        assertEquals("https://panel.example.com/dashboard/api/pair/redeem", RelayLink.redeem().toString());
++        assertEquals("https://panel.example.com/dashboard/api/client/check", RelayLink.check().toString());
++        assertEquals("wss://panel.example.com/dashboard/ws/client", RelayLink.socket().toString());
++        assertEquals("panel.example.com", RelayLink.hostLabel());
++    }
++    @Test void rejectsPathAndInsecureRemote() {
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("https://panel.example.com/x"));
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("http://example.com"));
++        assertEquals("http://localhost:8080", RelayLink.normalize("http://localhost:8080/"));
++        assertEquals("http://192.168.1.50:8080", RelayLink.normalize("http://192.168.1.50:8080/"));
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("http://203.0.113.5:8080"));
++    }
++    @Test void disabledByDefault() {
++        RelayLink.setForTest("");
++        assertFalse(RelayLink.enabled());
++    }
++    @Test void privateLanHttpAcceptedAndPublicHttpRejected() {
++        RelayLink.setForTest("http://10.0.0.5:8080");
++        assertTrue(RelayLink.enabled());
++        assertEquals("http://10.0.0.5:8080/dashboard/", RelayLink.page().toString());
++        assertEquals("ws://10.0.0.5:8080/dashboard/ws/client", RelayLink.socket().toString());
++        assertEquals("10.0.0.5:8080", RelayLink.hostLabel());
++        assertEquals("http://172.16.4.2:9000", RelayLink.normalize("http://172.16.4.2:9000"));
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("http://172.15.0.1:8080"));
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("http://8.8.8.8"));
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("ftp://panel.example.com"));
++    }
++}
