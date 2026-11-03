@@ -10,12 +10,17 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"gonutspanel/internal/auth"
 	"gonutspanel/internal/config"
@@ -2023,4 +2028,281 @@ func TestOAuthStatesStayBounded(t *testing.T) {
 	if n := len(o.m); n > oauthStateMax {
 		t.Fatalf("states=%d, want <= %d", n, oauthStateMax)
 	}
+}
+
+// inProcessMock is a protocol-1 client that lives in the test process. The
+// dashboard-facing tests use it to drive the real relay hub end to end.
+type inProcessMock struct {
+	conn           *websocket.Conn
+	mu             sync.Mutex
+	installationID int64
+	panelFrames    chan map[string]any
+}
+
+func (m *inProcessMock) write(v any) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.conn.WriteJSON(v)
+}
+
+func (m *inProcessMock) telemetry(account string) error {
+	return m.write(map[string]any{"type": "telemetry", "at": time.Now().UnixMilli(),
+		"state": "SCANNING", "detail": "Evaluating configured trades", "account": account,
+		"listed": 1, "slots": 18, "bank": 128000000, "trades": 23,
+		"profit": map[string]any{"h1": 19000, "h24": 45000, "source": "booked"},
+		"sales":  map[string]any{"h1": 2, "h24": 22}, "purchases": map[string]any{"h24": 24},
+		"listings": map[string]any{"h24": 8}, "reprices": map[string]any{"h24": 0},
+		"build": "mock-1", "lastAction": "Evaluating configured trades", "lastActionAt": time.Now().UnixMilli(),
+		"mascotFace": "WATCH", "swarm": map[string]any{"enabled": false},
+		"controls": map[string]any{"pause": true, "resume": false, "snapshot": true}})
+}
+
+func startInProcessMock(t *testing.T, baseURL, code string) *inProcessMock {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"code": code, "protocols": []int{1}, "name": "Mock bot",
+		"build": "mock-1", "hive": "mock", "capabilities": []string{"pause", "resume", "snapshot", "panel"}})
+	resp, err := http.Post(baseURL+"/dashboard/api/pair/redeem", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 201 {
+		t.Fatalf("redeem status=%d", resp.StatusCode)
+	}
+	var pr struct {
+		InstallationID int64  `json:"installationId"`
+		Credential     string `json:"credential"`
+		WSURL          string `json:"wsUrl"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+		t.Fatal(err)
+	}
+	url := pr.WSURL
+	if strings.HasPrefix(url, "https") {
+		url = "wss" + strings.TrimPrefix(url, "http")
+	}
+	if strings.HasPrefix(url, "http") {
+		url = "ws" + strings.TrimPrefix(url, "http")
+	}
+	conn, _, err := websocket.DefaultDialer.Dial(url, http.Header{"Authorization": {"Bearer " + pr.Credential}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &inProcessMock{conn: conn, installationID: pr.InstallationID, panelFrames: make(chan map[string]any, 8)}
+	if err := m.write(map[string]any{"type": "hello", "protocols": []int{1}, "build": "mock-1",
+		"name": "Mock bot", "hive": "mock", "capabilities": []string{"pause", "resume", "snapshot", "panel"}}); err != nil {
+		t.Fatal(err)
+	}
+	var welcome map[string]any
+	if err := conn.ReadJSON(&welcome); err != nil || welcome["type"] != "welcome" {
+		t.Fatalf("welcome=%v err=%v", welcome, err)
+	}
+	go func() {
+		for {
+			var f map[string]any
+			if conn.ReadJSON(&f) != nil {
+				return
+			}
+			switch f["type"] {
+			case "ping":
+				_ = m.write(map[string]any{"type": "pong", "at": f["at"]})
+			case "command":
+				id, _ := f["id"].(string)
+				_ = m.write(map[string]any{"type": "ack", "id": id})
+				_ = m.write(map[string]any{"type": "result", "id": id, "status": "completed", "reason": "trading paused"})
+				_ = m.telemetry("MockAccount")
+			case "panel":
+				m.panelFrames <- f
+				reply := map[string]any{"type": "panel_result", "id": f["id"], "status": 200}
+				switch f["op"] {
+				case "page":
+					reply["contentType"] = "text/html; charset=utf-8"
+					reply["body"] = `<head></head><body><h1>Mock panel</h1><img src="/logo.png"><form class="out" method="post" action="/logout"></form><a href="https://gonuts.at/dashboard/bugs">bugs</a><script>fetch('/state');fetch('/act')</script></body>`
+				case "state", "data", "change":
+					reply["contentType"] = "application/json"
+					reply["body"] = `{"ok":true}`
+				case "act":
+					reply["status"] = 204
+					reply["contentType"] = "text/plain"
+					reply["body"] = ""
+				default:
+					reply["status"] = 404
+					reply["contentType"] = "text/plain"
+					reply["body"] = "Not found"
+				}
+				_ = m.write(reply)
+			}
+		}
+	}()
+	return m
+}
+
+func (m *inProcessMock) close() { m.conn.Close() }
+
+// TestEndToEndPairTelemetryCommandPanel walks the whole stack the way a mod
+// and a browser would: dev sign-in, pairing-code creation, redeem, a real
+// WebSocket, telemetry, a command, a relayed panel page, and a panel action.
+func TestEndToEndPairTelemetryCommandPanel(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	hub := relay.NewHub(st, relay.Options{HeartbeatSeconds: 20, MaxMessageBytes: 32768,
+		MaxPanelInFlight: 8, PanelTimeout: time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	go hub.Start(ctx)
+	defer hub.Stop()
+	defer cancel()
+
+	ts := httptest.NewUnstartedServer(nil)
+	cfg := config.Config{PublicBaseURL: "http://" + ts.Listener.Addr().String(),
+		DevLogin: true, PanelCacheBytes: 1 << 20}
+	s := New(cfg, st, hub, nil)
+	ts.Config.Handler = s.Handler()
+	ts.Start()
+	defer ts.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	resp, err := client.Get(ts.URL + "/auth/dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	resp, err = client.Get(ts.URL + "/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	m := regexp.MustCompile(`name="gonuts-csrf" content="([^"]+)"`).FindSubmatch(page)
+	if len(m) != 2 {
+		t.Fatalf("no csrf in dashboard: %s", page)
+	}
+	csrf := string(m[1])
+
+	req, _ := http.NewRequest("POST", ts.URL+"/dashboard/api/pair/code", nil)
+	req.Header.Set("X-Gonuts-Csrf", csrf)
+	req.Header.Set("Origin", ts.URL)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pairCode struct {
+		Code string `json:"code"`
+	}
+	json.NewDecoder(resp.Body).Decode(&pairCode)
+	resp.Body.Close()
+	if pairCode.Code == "" {
+		t.Fatal("no pairing code")
+	}
+
+	mock := startInProcessMock(t, ts.URL, pairCode.Code)
+	defer mock.close()
+	waitWeb(t, "online", func() bool { return hub.Online(mock.installationID) })
+	if err := mock.telemetry("MockAccount"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := func() map[string]any {
+		req, _ := http.NewRequest("GET", ts.URL+"/dashboard/api/state", nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	waitWeb(t, "telemetry", func() bool {
+		b := state()
+		list, _ := b["installations"].([]any)
+		if len(list) != 1 {
+			return false
+		}
+		inst := list[0].(map[string]any)
+		tel, _ := inst["telemetry"].(map[string]any)
+		return tel != nil && tel["account"] == "MockAccount"
+	})
+
+	req, _ = http.NewRequest("POST", ts.URL+"/dashboard/api/installations/"+
+		strconv.FormatInt(mock.installationID, 10)+"/command", strings.NewReader(`{"command":"pause"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gonuts-Csrf", csrf)
+	req.Header.Set("Origin", ts.URL)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 202 {
+		t.Fatalf("command status=%d", resp.StatusCode)
+	}
+	waitWeb(t, "command result", func() bool {
+		b := state()
+		list, _ := b["installations"].([]any)
+		if len(list) != 1 {
+			return false
+		}
+		last, _ := list[0].(map[string]any)["lastCommand"].(map[string]any)
+		return last != nil && last["state"] == "completed"
+	})
+
+	panelURL := ts.URL + "/dashboard/panel/" + strconv.FormatInt(mock.installationID, 10) + "/"
+	resp, err = client.Get(panelURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	panel, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(panel), "Mock panel") ||
+		!strings.Contains(string(panel), `src="logo.png"`) || strings.Contains(string(panel), "gonuts.at") {
+		t.Fatalf("panel status=%d body=%s", resp.StatusCode, panel)
+	}
+
+	req, _ = http.NewRequest("POST", panelURL+"act", strings.NewReader("id=ctl:start"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-GoNuts", "1")
+	req.Header.Set("X-Gonuts-Csrf", csrf)
+	req.Header.Set("Origin", ts.URL)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Fatalf("act status=%d", resp.StatusCode)
+	}
+	select {
+	case f := <-mock.panelFrames:
+		if f["op"] != "page" {
+			t.Fatalf("first panel frame=%v", f)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mock did not receive page request")
+	}
+	select {
+	case f := <-mock.panelFrames:
+		if f["op"] != "act" {
+			t.Fatalf("act frame=%v", f)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mock did not receive act")
+	}
+}
+
+func waitWeb(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %s", what)
 }
