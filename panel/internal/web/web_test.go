@@ -1835,3 +1835,27 @@ func TestAuthLoginWithoutDiscord(t *testing.T) {
 		}
 	}
 }
+
+func TestOAuthStatesStayBounded(t *testing.T) {
+	o := &oauthStates{m: map[string]oauthState{}}
+
+	// Expired states are swept once the map is full, even under a login flood.
+	for i := 0; i < oauthStateMax; i++ {
+		o.m[fmt.Sprintf("old-%d", i)] = oauthState{verifier: "v", expires: time.Now().Add(-time.Minute)}
+	}
+	o.put("fresh", "verifier", time.Minute)
+	if n := len(o.m); n != 1 {
+		t.Fatalf("states=%d after expired sweep, want 1", n)
+	}
+	if v, ok := o.take("fresh"); !ok || v != "verifier" {
+		t.Fatalf("fresh verifier=%q ok=%v", v, ok)
+	}
+
+	// Fresh states are capped too; the soonest-expiring one is retired.
+	for i := 0; i < oauthStateMax+10; i++ {
+		o.put(fmt.Sprintf("state-%d", i), "v", time.Duration(i+1)*time.Second)
+	}
+	if n := len(o.m); n > oauthStateMax {
+		t.Fatalf("states=%d, want <= %d", n, oauthStateMax)
+	}
+}

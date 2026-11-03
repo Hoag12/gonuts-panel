@@ -25,11 +25,38 @@ type oauthStates struct {
 	m  map[string]oauthState
 }
 
+// oauthStateMax bounds the map. /auth/login is unauthenticated, so without a
+// cap a stream of abandoned sign-ins would grow memory for the state TTL.
+const oauthStateMax = 1024
+
 // put records a verifier for state until it expires.
 func (o *oauthStates) put(state, verifier string, ttl time.Duration) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.m[state] = oauthState{verifier: verifier, expires: time.Now().Add(ttl)}
+	now := time.Now()
+	if len(o.m) >= oauthStateMax {
+		// Drop expired entries first; only then retire the soonest-expiring
+		// one, which costs at most one abandoned sign-in.
+		for k, v := range o.m {
+			if now.After(v.expires) {
+				delete(o.m, k)
+			}
+		}
+		if len(o.m) >= oauthStateMax {
+			var oldestKey string
+			var oldest time.Time
+			found := false
+			for k, v := range o.m {
+				if !found || v.expires.Before(oldest) {
+					oldestKey, oldest, found = k, v.expires, true
+				}
+			}
+			if found {
+				delete(o.m, oldestKey)
+			}
+		}
+	}
+	o.m[state] = oauthState{verifier: verifier, expires: now.Add(ttl)}
 }
 
 // take consumes state and returns its verifier. Each state can be used once.
