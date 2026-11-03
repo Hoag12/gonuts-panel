@@ -170,7 +170,7 @@ reverse proxy.
    GONUTS_PUBLIC_BASE_URL=http://<LAN-IP>:8080
    GONUTS_COOKIE_SECURE=0
    GONUTS_TRUST_PROXY=0
-   GONUTS_LOCAL_PASSWORD_HASH=pbkdf2-sha256$600000$...$...
+   GONUTS_LOCAL_PASSWORD_HASH='pbkdf2-sha256$600000$...$...'
    GONUTS_LOCAL_USER=owner
    GONUTS_DATA_DIR=/volume1/docker/gonuts-panel/data
    ```

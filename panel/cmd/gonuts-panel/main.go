@@ -41,6 +41,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// A malformed hash fails every sign-in without any other symptom, so treat
+	// it as a startup error before the listener opens. The value itself is
+	// never logged.
+	if cfg.LocalPasswordHash != "" && !auth.ValidPasswordHash(cfg.LocalPasswordHash) {
+		log.Fatal("gonuts-panel: GONUTS_LOCAL_PASSWORD_HASH is malformed; regenerate it with -hash-password")
+	}
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		log.Fatal(err)

@@ -115,14 +115,39 @@ func TestVerifyPasswordFailsClosedOnMalformedInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parts := strings.Split(encoded, "$")
+	for name, encoded := range malformedPasswordHashes(encoded) {
+		if VerifyPassword(encoded, "correct horse") {
+			t.Fatalf("%s: malformed hash accepted", name)
+		}
+	}
+}
 
+func TestValidPasswordHash(t *testing.T) {
+	encoded, err := HashPassword("correct horse", cheapIterations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ValidPasswordHash(encoded) {
+		t.Fatal("generated hash reported invalid")
+	}
+	for name, encoded := range malformedPasswordHashes(encoded) {
+		if ValidPasswordHash(encoded) {
+			t.Fatalf("%s: malformed hash reported valid", name)
+		}
+	}
+}
+
+// malformedPasswordHashes returns encodings that VerifyPassword and
+// ValidPasswordHash must both reject, built from a real hash so only the field
+// under test is wrong.
+func malformedPasswordHashes(encoded string) map[string]string {
+	parts := strings.Split(encoded, "$")
 	salt := parts[2]
 	key := parts[3]
 	shortSalt := base64.RawStdEncoding.EncodeToString([]byte("short"))
 	shortKey := base64.RawStdEncoding.EncodeToString([]byte("short"))
 
-	cases := map[string]string{
+	return map[string]string{
 		"empty":               "",
 		"plaintext":           "correct horse",
 		"too few fields":      "pbkdf2-sha256$1000$" + salt,
@@ -139,10 +164,5 @@ func TestVerifyPasswordFailsClosedOnMalformedInput(t *testing.T) {
 		"padded salt":         "pbkdf2-sha256$1000$" + salt + "==$" + key,
 		"invalid base64 salt": "pbkdf2-sha256$1000$!!!!$" + key,
 		"invalid base64 key":  "pbkdf2-sha256$1000$" + salt + "$!!!!",
-	}
-	for name, encoded := range cases {
-		if VerifyPassword(encoded, "correct horse") {
-			t.Fatalf("%s: malformed hash accepted", name)
-		}
 	}
 }

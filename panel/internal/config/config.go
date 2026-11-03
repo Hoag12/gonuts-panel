@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+// minLocalPasswordLength matches auth.MinPasswordLength. config cannot import
+// auth (auth imports config for the Discord settings), so the bound is
+// duplicated here and enforced again by HashPassword.
+const minLocalPasswordLength = 4
+
 type Config struct {
 	Addr                string
 	PublicBaseURL       string
@@ -75,6 +80,13 @@ func Load() (Config, error) {
 	cfg.CookieSecure = boolEnv("GONUTS_COOKIE_SECURE", strings.HasPrefix(base, "https://"))
 	if cfg.DevLogin && !IsLoopbackBaseURL(base) {
 		return Config{}, fmt.Errorf("GONUTS_DEV_LOGIN requires a loopback GONUTS_PUBLIC_BASE_URL (localhost, 127.0.0.1, or [::1])")
+	}
+	// Mirror auth.HashPassword's minimum so the plaintext fallback cannot be a
+	// password the hash generator would refuse. The raw value is measured, not
+	// a trimmed copy, because the comparison and the generator both use the
+	// exact bytes.
+	if strings.TrimSpace(cfg.LocalPassword) != "" && len(cfg.LocalPassword) < minLocalPasswordLength {
+		return Config{}, fmt.Errorf("GONUTS_LOCAL_PASSWORD must be at least %d characters", minLocalPasswordLength)
 	}
 	if !cfg.DevLogin && !cfg.DiscordEnabled && !cfg.LocalAuthEnabled() {
 		return Config{}, fmt.Errorf("Discord client id/secret or GONUTS_LOCAL_PASSWORD_HASH/GONUTS_LOCAL_PASSWORD are required unless GONUTS_DEV_LOGIN=1")

@@ -118,6 +118,26 @@ func TestLoadIgnoresWhitespaceOnlyPlaintext(t *testing.T) {
 	}
 }
 
+func TestLoadEnforcesPlaintextMinimumLength(t *testing.T) {
+	// No Discord credentials, so only the plaintext fallback can provide a
+	// sign-in method and the length check is what rejects the short value.
+	clearAuthEnv(t)
+	t.Setenv("GONUTS_PUBLIC_BASE_URL", "https://panel.example.com")
+	t.Setenv("GONUTS_LOCAL_PASSWORD", "abc")
+	if _, err := Load(); err == nil {
+		t.Fatal("three-character plaintext password accepted")
+	}
+
+	t.Setenv("GONUTS_LOCAL_PASSWORD", "abcd")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("four-character plaintext password rejected: %v", err)
+	}
+	if cfg.LocalPassword != "abcd" || !cfg.LocalAuthEnabled() {
+		t.Fatalf("local password=%q enabled=%v", cfg.LocalPassword, cfg.LocalAuthEnabled())
+	}
+}
+
 func TestLoadDiscordOnlyStillWorks(t *testing.T) {
 	clearAuthEnv(t)
 	t.Setenv("GONUTS_PUBLIC_BASE_URL", "https://panel.example.com")

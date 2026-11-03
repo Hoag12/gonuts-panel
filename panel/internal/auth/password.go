@@ -63,22 +63,8 @@ func HashPassword(password string, iterations int) (string, error) {
 // count returns false rather than an error, so a bad configuration cannot
 // accidentally authenticate.
 func VerifyPassword(encoded, password string) bool {
-	parts := strings.Split(encoded, "$")
-	if len(parts) != 4 || parts[0] != passwordScheme {
-		return false
-	}
-	// Atoi fails closed on non-numeric or oversized counts before any
-	// derivation work.
-	iterations, err := strconv.Atoi(parts[1])
-	if err != nil || iterations < 1 || iterations > MaxPasswordIterations {
-		return false
-	}
-	salt, err := base64.RawStdEncoding.Strict().DecodeString(parts[2])
-	if err != nil || len(salt) != passwordSaltSize {
-		return false
-	}
-	want, err := base64.RawStdEncoding.Strict().DecodeString(parts[3])
-	if err != nil || len(want) != passwordKeySize {
+	iterations, salt, want, ok := parsePasswordHash(encoded)
+	if !ok {
 		return false
 	}
 	got, err := pbkdf2.Key(sha256.New, password, salt, iterations, len(want))
@@ -86,4 +72,38 @@ func VerifyPassword(encoded, password string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare(got, want) == 1
+}
+
+// ValidPasswordHash reports whether encoded is a well-formed encoded hash. It
+// validates exactly what VerifyPassword validates (scheme, iteration range,
+// salt and key sizes, strict unpadded base64) but derives no key, so startup can
+// reject a typo instead of failing every sign-in. An empty string is invalid.
+func ValidPasswordHash(encoded string) bool {
+	_, _, _, ok := parsePasswordHash(encoded)
+	return ok
+}
+
+// parsePasswordHash decodes and validates encoded without running PBKDF2. It
+// returns ok=false for an unknown scheme, a non-numeric or out-of-range
+// iteration count, or a salt/key of the wrong size or encoding.
+func parsePasswordHash(encoded string) (iterations int, salt, key []byte, ok bool) {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 4 || parts[0] != passwordScheme {
+		return 0, nil, nil, false
+	}
+	// Atoi fails closed on non-numeric or oversized counts before any
+	// derivation work.
+	iterations, err := strconv.Atoi(parts[1])
+	if err != nil || iterations < 1 || iterations > MaxPasswordIterations {
+		return 0, nil, nil, false
+	}
+	salt, err = base64.RawStdEncoding.Strict().DecodeString(parts[2])
+	if err != nil || len(salt) != passwordSaltSize {
+		return 0, nil, nil, false
+	}
+	key, err = base64.RawStdEncoding.Strict().DecodeString(parts[3])
+	if err != nil || len(key) != passwordKeySize {
+		return 0, nil, nil, false
+	}
+	return iterations, salt, key, true
 }
