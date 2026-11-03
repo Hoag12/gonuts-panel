@@ -500,7 +500,10 @@ func TestDiscordExchangeAndMe(t *testing.T) {
 	d := &Discord{ClientID: "id", ClientSecret: "sec", RedirectURI: "http://localhost/auth/callback",
 		AuthorizeURL: ts.URL + "/oauth2/authorize", TokenURL: ts.URL + "/oauth2/token",
 		UserURL: ts.URL + "/users/@me", HTTP: ts.Client()}
-	u, err := d.Exchange(context.Background(), "code", "verifier")
+	accessToken, err := d.Exchange(context.Background(), "code", "verifier")
+	if err != nil { t.Fatal(err) }
+	if accessToken != "tok" { t.Fatalf("token=%q", accessToken) }
+	u, err := d.Me(context.Background(), accessToken)
 	if err != nil { t.Fatal(err) }
 	if u.ID != "42" || u.Username != "tester" { t.Fatalf("user=%+v", u) }
 	if tokenBody["code"] != "code" || tokenBody["code_verifier"] != "verifier" { t.Fatalf("token body=%v", tokenBody) }

@@ -7,3 +7,7 @@ panel/bin/
 *.test
 *.log
 .env
+.superpowers/
+mod/
+dist/
+panel/dist/
