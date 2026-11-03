@@ -37,8 +37,14 @@ func (s *Server) apiRedeem(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if !relay.ValidName(body.Name) || !relay.ValidBuild(body.Build) ||
-		!relay.ValidHive(body.Hive) || !relay.ValidCaps(body.Capabilities) {
+	// Trim before validating and before redeeming: the validators and the
+	// stored value must agree, otherwise padded whitespace could carry a
+	// value past the 48/60/64 character limits.
+	name := strings.TrimSpace(body.Name)
+	build := strings.TrimSpace(body.Build)
+	hive := strings.TrimSpace(body.Hive)
+	if !relay.ValidName(name) || !relay.ValidBuild(build) ||
+		!relay.ValidHive(hive) || !relay.ValidCaps(body.Capabilities) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"message": "invalid pairing details",
 			"status":  http.StatusBadRequest,
@@ -47,7 +53,7 @@ func (s *Server) apiRedeem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inst, credential, err := s.Store.RedeemCode(
-		body.Code, body.Name, body.Build, body.Hive, body.Capabilities, time.Now())
+		body.Code, name, build, hive, body.Capabilities, time.Now())
 	if err != nil {
 		status, message := http.StatusServiceUnavailable, "pairing unavailable"
 		switch {

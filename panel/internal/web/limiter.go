@@ -12,6 +12,15 @@ type bucket struct {
 	last   time.Time
 }
 
+// Buckets are attacker-controlled because callers key them by IP or other
+// untrusted strings, so the map must stay bounded. Above limiterMaxBuckets a
+// sweep drops every bucket idle for limiterBucketTTL; if everything is still
+// fresh the single oldest bucket is dropped instead.
+const (
+	limiterMaxBuckets = 1024
+	limiterBucketTTL  = 10 * time.Minute
+)
+
 // limiter is an in-memory token bucket keyed by caller-supplied strings
 // (an IP, a Discord id, or a session hash). It is safe for concurrent use.
 type limiter struct {
@@ -33,6 +42,9 @@ func (l *limiter) allow(key string, now time.Time) bool {
 	defer l.mu.Unlock()
 	b := l.buckets[key]
 	if b == nil {
+		if len(l.buckets) >= limiterMaxBuckets {
+			l.evictLocked(now)
+		}
 		b = &bucket{tokens: l.burst, last: now}
 		l.buckets[key] = b
 	}
@@ -43,4 +55,24 @@ func (l *limiter) allow(key string, now time.Time) bool {
 	}
 	b.tokens--
 	return true
+}
+
+// evictLocked removes idle buckets, or the oldest bucket when none is idle, so
+// the map never grows past limiterMaxBuckets. It runs O(n) only on overflow.
+func (l *limiter) evictLocked(now time.Time) {
+	cutoff := now.Add(-limiterBucketTTL)
+	var oldestKey string
+	var oldest time.Time
+	for k, b := range l.buckets {
+		if b.last.Before(cutoff) {
+			delete(l.buckets, k)
+			continue
+		}
+		if oldestKey == "" || b.last.Before(oldest) {
+			oldestKey, oldest = k, b.last
+		}
+	}
+	if len(l.buckets) >= limiterMaxBuckets && oldestKey != "" {
+		delete(l.buckets, oldestKey)
+	}
 }

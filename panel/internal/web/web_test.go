@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -136,6 +137,61 @@ func TestPairingRedeemErrors(t *testing.T) {
 	body := `{"code":"` + expired + `","protocols":[1]}`
 	if rec := post(body); rec.Code != http.StatusGone {
 		t.Fatalf("expired status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestPairingRedeemTrimsPaddedDetails(t *testing.T) {
+	s, st := newTestServer(t)
+
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/dashboard/api/pair/redeem", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Validation and the stored installation must agree on the trimmed value.
+	code, _, err := st.CreateCode("u1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := post(`{"code":"` + code + `","protocols":[1],"name":"  Padded Bot  ","build":"  b1.2  ","hive":"  hive1  "}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("padded redeem status=%d body=%s", rec.Code, rec.Body)
+	}
+	var pair struct {
+		InstallationID int64  `json:"installationId"`
+		Name           string `json:"name"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pair); err != nil {
+		t.Fatal(err)
+	}
+	if pair.Name != "Padded Bot" {
+		t.Fatalf("response name=%q", pair.Name)
+	}
+	inst, ok := st.Installation(pair.InstallationID)
+	if !ok {
+		t.Fatalf("installation %d missing", pair.InstallationID)
+	}
+	if inst.Name != "Padded Bot" || inst.Build != "b1.2" || inst.Hive != "hive1" {
+		t.Fatalf("stored name=%q build=%q hive=%q", inst.Name, inst.Build, inst.Hive)
+	}
+
+	// Padding must not smuggle an overlong value past the 48/60/64 limits.
+	overlong := []struct{ field, value string }{
+		{"name", strings.Repeat("n", 49)},
+		{"build", strings.Repeat("b", 61)},
+		{"hive", strings.Repeat("h", 65)},
+	}
+	for _, c := range overlong {
+		code, _, err := st.CreateCode("u1", time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := `{"code":"` + code + `","protocols":[1],"` + c.field + `":"  ` + c.value + `  "}`
+		if rec := post(body); rec.Code != http.StatusBadRequest {
+			t.Fatalf("padded overlong %s=%d body=%s", c.field, rec.Code, rec.Body)
+		}
 	}
 }
 
@@ -275,5 +331,77 @@ func TestClientIPTrustProxy(t *testing.T) {
 	s.Cfg.TrustProxy = true
 	if got := s.clientIP(req); got != "198.51.100.7" {
 		t.Fatalf("trusted proxy ip=%q", got)
+	}
+}
+
+func TestLimiterBucketsStayBounded(t *testing.T) {
+	l := newLimiter(60, 4) // one token per second, burst of four
+	base := time.Unix(1700000000, 0)
+
+	// Attacker-controlled keys must not grow the map without limit.
+	for i := 0; i < 5000; i++ {
+		l.allow(fmt.Sprintf("attacker-%d", i), base)
+		if n := len(l.buckets); n > limiterMaxBuckets {
+			t.Fatalf("after %d keys buckets=%d, want <= %d", i+1, n, limiterMaxBuckets)
+		}
+	}
+
+	// Eviction must not reset buckets: a key that spent its burst stays
+	// depleted even while unrelated keys push the map over the bound. hot is
+	// newer than every filler, so cleanup never picks it as the oldest.
+	spent := base.Add(time.Second)
+	for i := 0; i < 4; i++ {
+		if !l.allow("hot", spent) {
+			t.Fatalf("hot request %d denied from a full bucket", i+1)
+		}
+	}
+	if l.allow("hot", spent) {
+		t.Fatal("hot exceeded its burst")
+	}
+	for i := 0; i < limiterMaxBuckets-1; i++ {
+		l.allow(fmt.Sprintf("filler-%d", i), spent)
+		if n := len(l.buckets); n > limiterMaxBuckets {
+			t.Fatalf("after %d fillers buckets=%d, want <= %d", i+1, n, limiterMaxBuckets)
+		}
+	}
+
+	// One second of refill is all hot has earned; a reset bucket would allow
+	// a whole extra burst here.
+	check := spent.Add(time.Second)
+	allowed := 0
+	for i := 0; i < 5; i++ {
+		if l.allow("hot", check) {
+			allowed++
+		}
+	}
+	if allowed != 1 {
+		t.Fatalf("hot allowed %d more requests, want 1 (one refilled token, state preserved)", allowed)
+	}
+
+	// A brand-new key still starts full.
+	for i := 0; i < 4; i++ {
+		if !l.allow("fresh", check) {
+			t.Fatalf("fresh key request %d denied", i+1)
+		}
+	}
+	if l.allow("fresh", check) {
+		t.Fatal("fresh key exceeded its burst")
+	}
+}
+
+func TestLimiterDropsIdleBuckets(t *testing.T) {
+	l := newLimiter(60, 4)
+	base := time.Unix(1700000000, 0)
+	for i := 0; i < limiterMaxBuckets; i++ {
+		l.allow(fmt.Sprintf("idle-%d", i), base)
+	}
+	// Past the sweep age the stale buckets go away, leaving room for new keys.
+	after := base.Add(limiterBucketTTL + time.Minute)
+	l.allow("new", after)
+	if n := len(l.buckets); n != 1 {
+		t.Fatalf("buckets=%d after idle sweep, want 1", n)
+	}
+	if _, ok := l.buckets["new"]; !ok {
+		t.Fatal("newly inserted bucket missing after sweep")
 	}
 }
