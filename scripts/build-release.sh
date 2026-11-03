@@ -42,9 +42,13 @@ if [ -f dist/doughbay-0.1.2-swarm+26.2.jar ]; then
 fi
 cp patches/relay-link.patch dist/
 
+cp panel/dist/gonuts-panel-linux-arm64 dist/
+cp panel/dist/gonuts-panel-linux-amd64 dist/
+cp panel/dist/gonuts-panel.jar dist/
+
 echo "Writing checksums..."
 rm -f dist/SHA256SUMS.txt
 (cd dist && sha256sum * > SHA256SUMS.txt)
 
 echo "Release artifacts:"
-ls -lh dist panel/dist/gonuts-panel.jar
+ls -lh dist
