@@ -438,7 +438,6 @@ func (f *fakeRelay) ServeWS(http.ResponseWriter, *http.Request) {}
 type panelFixture struct {
 	srv   *Server
 	store *store.Store
-	relay *fakeRelay
 	inst  *store.Installation
 	token string
 	csrf  string
@@ -468,7 +467,6 @@ func newPanelFixture(t *testing.T, fr *fakeRelay) *panelFixture {
 	return &panelFixture{
 		srv:   srv,
 		store: st,
-		relay: fr,
 		inst:  inst,
 		token: token,
 		csrf:  csrf,
