@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="gonuts-csrf" content="{{CSRF}}">
+<title>GoNuts dashboard</title>
+<link rel="icon" href="/assets/logo.png">
+<link rel="stylesheet" href="/assets/dashboard.css">
+</head>
+<body>
+<header class="top">
+  <h1>GoNuts <span>dashboard</span></h1>
+  <div class="top-right">
+    <button class="btn gold" id="linkClient">Link client</button>
+    <span id="who" class="who"></span>
+    <form method="post" action="/auth/logout"><button class="btn ghost">Sign out</button></form>
+  </div>
+</header>
+<main>
+  <section id="empty" class="empty panel" hidden>
+    <h2>No clients linked yet</h2>
+    <p>Choose <strong>Link client</strong>, then enter the code in GoNuts → Dashboard → Link with code.</p>
+  </section>
+  <section id="cards" class="cards" aria-live="polite"></section>
+  <section id="hive" class="hive panel" hidden></section>
+</main>
+<div id="modal" class="modal" hidden>
+  <div class="modal-card panel">
+    <h2>Link a client</h2>
+    <p>Enter this one-use code in the intended bot within five minutes.</p>
+    <div class="code" id="code">…</div>
+    <p class="muted" id="codeExpiry"></p>
+    <div class="modal-actions">
+      <button class="btn" id="copyCode">Copy code</button>
+      <button class="btn ghost" id="closeModal">Close</button>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/assets/dashboard.js"></script>
+</body>
+</html>

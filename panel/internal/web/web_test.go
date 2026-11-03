@@ -284,6 +284,91 @@ func TestHealthHeadersAndRootRedirect(t *testing.T) {
 	}
 }
 
+func TestDashboardShellCarriesSessionCSRF(t *testing.T) {
+	s, st := newTestServer(t)
+	if err := st.UpsertUser(store.User{ID: "u1", Username: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	token, csrf, err := st.CreateSession("u1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Signed out: the login page, never a shell with a CSRF placeholder.
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/dashboard", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("signed-out dashboard status=%d", rec.Code)
+	}
+	if page := rec.Body.String(); !strings.Contains(page, "/auth/login") ||
+		strings.Contains(page, "gonuts-csrf") || strings.Contains(page, "dashboard.js") {
+		t.Fatalf("signed-out page is not the login page: %s", page)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("login cache-control=%q", rec.Header().Get("Cache-Control"))
+	}
+
+	// Signed in: the shell must carry this session's CSRF token and link the
+	// same-origin assets.
+	req := httptest.NewRequest("GET", "/dashboard", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status=%d", rec.Code)
+	}
+	page := rec.Body.String()
+	if !strings.Contains(page, `<meta name="gonuts-csrf" content="`+csrf+`">`) {
+		t.Fatalf("dashboard does not carry the session CSRF: %s", page)
+	}
+	if strings.Contains(page, "{{CSRF}}") {
+		t.Fatal("dashboard still contains the CSRF placeholder")
+	}
+	for _, want := range []string{"/assets/dashboard.css", "/assets/dashboard.js", "/assets/logo.png"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("dashboard does not link %s", want)
+		}
+	}
+	if strings.Contains(page, "Bug tracker") {
+		t.Fatal("dashboard still links the removed bug tracker")
+	}
+	if rec.Header().Get("Content-Type") != "text/html; charset=utf-8" ||
+		rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("dashboard headers: %v", rec.Header())
+	}
+}
+
+func TestEmbeddedAssetsAreServed(t *testing.T) {
+	s, _ := newTestServer(t)
+	assets := []struct {
+		path string
+		typ  string
+	}{
+		{"/assets/dashboard.css", "text/css"},
+		{"/assets/dashboard.js", "javascript"},
+		{"/assets/mascot_v2.png", "image/png"},
+		{"/assets/logo.png", "image/png"},
+		{"/assets/Monocraft.ttf", ""},
+	}
+	for _, a := range assets {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", a.path, nil))
+		if rec.Code != http.StatusOK || rec.Body.Len() == 0 {
+			t.Fatalf("%s status=%d len=%d", a.path, rec.Code, rec.Body.Len())
+		}
+		if a.typ != "" && !strings.Contains(rec.Header().Get("Content-Type"), a.typ) {
+			t.Fatalf("%s content-type=%q", a.path, rec.Header().Get("Content-Type"))
+		}
+	}
+
+	// The assets root cannot be used to read the shells or the repository.
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/assets/../dashboard.html", nil))
+	if strings.Contains(rec.Body.String(), "gonuts-csrf") {
+		t.Fatal("assets route escaped its subtree")
+	}
+}
+
 func TestNoopRelayWhenHubOmitted(t *testing.T) {
 	s, _ := newTestServer(t)
 	if s.Hub.Online(1) {
