@@ -6,7 +6,8 @@ the mod's WebSocket connection, and stores installations, pairing codes, and
 sessions in a single `state.json`.
 
 Everything is served from one origin. The browser only talks to this process:
-no CDN, no analytics, no third-party script or font.
+no CDN, no analytics, no third-party requests; Monocraft is bundled under the
+SIL Open Font License (`web/assets/Monocraft-OFL.txt`).
 
 - `GET /healthz` — liveness probe.
 - `/auth/*` — Discord OAuth (or `GONUTS_DEV_LOGIN=1` local sign-in).
@@ -53,9 +54,16 @@ The repository ships `.devcontainer/devcontainer.json`: a Codespace gets Go
 
    runs `go test ./...`, and finally `go run ./cmd/gonuts-panel`. The Discord
    redirect is derived as `${PUBLIC_BASE_URL}/auth/callback`.
-5. In the Ports tab confirm port **8080** is **Public**, then open the forwarded
+5. Run the suite once under the race detector as well. `-race` needs cgo and a
+   C compiler, so the Codespace (or any Linux host with gcc) is the place for
+   it, not the Windows development host:
+
+   ```bash
+   ./scripts/test-race.sh    # go test -race ./... -count=1
+   ```
+6. In the Ports tab confirm port **8080** is **Public**, then open the forwarded
    URL. The origin is `https://<codespace>-8080.<region>.app.github.dev`.
-6. Point the mod at the same origin in `config/gonuts-panel-link.json`:
+7. Point the mod at the same origin in `config/gonuts-panel-link.json`:
 
    ```json
    {"baseUrl":"https://<codespace>-8080.app.github.dev"}
@@ -63,7 +71,7 @@ The repository ships `.devcontainer/devcontainer.json`: a Codespace gets Go
 
    The string must match `GONUTS_PUBLIC_BASE_URL` exactly (scheme, host, port,
    no trailing slash); otherwise pairing succeeds but the link is rejected.
-7. If the Codespace is recreated it gets a new URL: update the Discord redirect
+8. If the Codespace is recreated it gets a new URL: update the Discord redirect
    and the mod's `baseUrl`, and restart the client (the config is read once).
 
 ## Discord application
@@ -73,9 +81,10 @@ The repository ships `.devcontainer/devcontainer.json`: a Codespace gets Go
 2. OAuth2 → Redirects → add `https://YOUR_HOST/auth/callback`, where
    `YOUR_HOST` is the exact host in `GONUTS_PUBLIC_BASE_URL`. Codespaces use the
    forwarded origin from step 2 above; a NAS uses its reverse-proxy hostname.
-3. OAuth2 → copy the **Client ID** and **Client Secret** into `.env`
-   (`GONUTS_DISCORD_CLIENT_ID`, `GONUTS_DISCORD_CLIENT_SECRET`). The panel only
-   requests the `identify` scope — no bot token, no guild access.
+3. OAuth2 → copy the **Client ID** and **Client Secret** into `.env` for a
+   Docker deployment (or export them as `GONUTS_DISCORD_CLIENT_ID` and
+   `GONUTS_DISCORD_CLIENT_SECRET` for a native run). The panel only requests
+   the `identify` scope — no bot token, no guild access.
 4. Optional: set `GONUTS_ALLOWED_DISCORD_IDS` to a comma-separated list of
    Discord user IDs to restrict who may sign in. Leave it empty to let any
    Discord account that can reach the panel sign in.
@@ -135,9 +144,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 ../.tools/go/bin/go build -trimpath -ldfla
 ```
 
 `dist/gonuts-panel-linux-arm64` is a static ELF64 AArch64 executable (roughly
-9 MB). Copy it to the NAS, make it executable, and provide the environment from
-`.env`. Launch it from a DSM **Task Scheduler** boot task, or (on a systemd
-host) with a unit such as:
+9 MB). Copy it to the NAS, make it executable, and export the variables from
+`.env` before launching it (`set -a; . ./.env; set +a`). The binary reads only
+its process environment and never parses `.env` itself; the systemd unit below
+supplies the same variables with `EnvironmentFile=`. Launch it from a DSM
+**Task Scheduler** boot task, or (on a systemd host) with a unit such as:
 
 ```ini
 [Unit]
@@ -171,7 +182,10 @@ WantedBy=multi-user.target
 - **Upgrades.** Rebuild the image (or replace the binary), restart, and keep the
   `data/` directory. Sessions in `state.json` survive a restart.
 - **Tests.** From `panel/`: `../.tools/go/bin/go vet ./...` and
-  `../.tools/go/bin/go test ./... -count=1`.
+  `../.tools/go/bin/go test ./... -count=1`. The race detector needs cgo and a
+  C toolchain, so run it on the Codespace or another Linux host from the
+  repository root: `./scripts/test-race.sh` (that is
+  `go test -race ./... -count=1` from `panel/`).
 
 ## Local development
 
@@ -181,5 +195,6 @@ GONUTS_DEV_LOGIN=1 GONUTS_DATA_DIR=./data ../.tools/go/bin/go run ./cmd/gonuts-p
 ```
 
 Then open <http://localhost:8080> and use the dev sign-in link. `GONUTS_DEV_LOGIN`
-mints a session without Discord, so it is refused unless explicitly set and the
-deployment `.env.example` pins it to `0`.
+mints a session without Discord, so it is refused unless explicitly set, it is
+rejected unless `GONUTS_PUBLIC_BASE_URL` is loopback (`localhost`, `127.0.0.1`,
+or `[::1]`), and the deployment `.env.example` pins it to `0`.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gonutspanel/internal/auth"
+	"gonutspanel/internal/config"
 	"gonutspanel/internal/store"
 )
 
@@ -171,7 +172,7 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 // authDev creates a local test session. It is disabled unless GONUTS_DEV_LOGIN
 // is set and never touches Discord.
 func (s *Server) authDev(w http.ResponseWriter, r *http.Request) {
-	if !s.Cfg.DevLogin {
+	if !s.Cfg.DevLogin || !config.IsLoopbackBaseURL(s.Cfg.PublicBaseURL) {
 		http.NotFound(w, r)
 		return
 	}
@@ -202,11 +203,29 @@ func (s *Server) authDev(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
-// authLogout drops the current session and clears the cookie.
+// authLogout drops the current session and clears the cookie. Because sign-out
+// is a mutation it carries the same CSRF and origin checks as the JSON APIs:
+// either the X-Gonuts-Csrf header or the form's hidden csrf field is accepted.
+// A request without a session has nothing to revoke, so it only clears any
+// stale cookie and redirects.
 func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
-	if token := auth.CookieToken(r); token != "" {
-		_ = s.Store.DeleteSession(token)
+	sess, _, ok := s.session(r)
+	if !ok {
+		auth.ClearSessionCookie(w, s.Cfg.CookieSecure)
+		http.Redirect(w, r, "/dashboard", http.StatusFound)
+		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	_ = r.ParseForm()
+	token := r.Header.Get(auth.CSRFHeader)
+	if token == "" {
+		token = r.PostForm.Get("csrf")
+	}
+	if !auth.Equal(token, sess.CSRF) || !auth.OriginAllowed(r, s.Cfg.PublicBaseURL) {
+		http.Error(w, "invalid request origin or token", http.StatusForbidden)
+		return
+	}
+	_ = s.Store.DeleteSession(auth.CookieToken(r))
 	auth.ClearSessionCookie(w, s.Cfg.CookieSecure)
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }

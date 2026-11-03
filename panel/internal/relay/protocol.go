@@ -77,12 +77,11 @@ var (
 	buildPattern = regexp.MustCompile(`^[0-9A-Za-z.+_-]{0,60}$`)
 	hivePattern  = regexp.MustCompile(`^[0-9A-Za-z_-]{0,64}$`)
 
-	knownCapabilities = map[string]bool{
-		"pause":    true,
-		"resume":   true,
-		"snapshot": true,
-		"panel":    true,
-	}
+	// Capabilities are advisory. The real client advertises a longer list than
+	// this relay consults (only "panel" is read), so the shape and count are
+	// bounded but unknown names are accepted and stored as received.
+	capPattern      = regexp.MustCompile(`^[a-z_]{1,32}$`)
+	maxCapabilities = 32
 )
 
 // ParseTelemetry validates and clamps one telemetry frame. Unknown fields are
@@ -236,13 +235,17 @@ func ValidHive(hive string) bool {
 	return hivePattern.MatchString(hive)
 }
 
-// ValidCaps reports whether every capability is part of the known set.
+// ValidCaps reports whether caps is a bounded list of capability-shaped
+// strings. Unknown capability names are tolerated: the relay only consults
+// "panel", and rejecting names the mod knows about would refuse every real
+// pairing. The list is a fixed-size array of bounded strings, so accepting it
+// cannot grow memory or the stored JSON without limit.
 func ValidCaps(caps []string) bool {
-	if len(caps) > len(knownCapabilities) {
+	if len(caps) > maxCapabilities {
 		return false
 	}
 	for _, c := range caps {
-		if !knownCapabilities[c] {
+		if !capPattern.MatchString(c) {
 			return false
 		}
 	}

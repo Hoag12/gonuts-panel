@@ -57,10 +57,29 @@ func Load() (Config, error) {
 		cfg.PanelCacheBytes = n
 	}
 	cfg.CookieSecure = boolEnv("GONUTS_COOKIE_SECURE", strings.HasPrefix(base, "https://"))
+	if cfg.DevLogin && !IsLoopbackBaseURL(base) {
+		return Config{}, fmt.Errorf("GONUTS_DEV_LOGIN requires a loopback GONUTS_PUBLIC_BASE_URL (localhost, 127.0.0.1, or [::1])")
+	}
 	if !cfg.DevLogin && (cfg.DiscordClientID == "" || cfg.DiscordClientSecret == "") {
 		return Config{}, fmt.Errorf("Discord client id/secret are required unless GONUTS_DEV_LOGIN=1")
 	}
 	return cfg, nil
+}
+
+// IsLoopbackBaseURL reports whether base is an http(s) origin whose host is
+// loopback. Dev login mints a session without any Discord proof, so it is only
+// safe to expose on a loopback origin; a public Codespace or NAS host would let
+// anyone who can reach the port sign in.
+func IsLoopbackBaseURL(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
 
 func env(key, fallback string) string {

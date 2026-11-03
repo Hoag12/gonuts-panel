@@ -14,7 +14,10 @@
   <div class="top-right">
     <button class="btn gold" id="linkClient">Link client</button>
     <span id="who" class="who"></span>
-    <form method="post" action="/auth/logout"><button class="btn ghost">Sign out</button></form>
+    <form method="post" action="/auth/logout">
+      <input type="hidden" name="csrf" value="{{CSRF}}">
+      <button class="btn ghost">Sign out</button>
+    </form>
   </div>
 </header>
 <main>

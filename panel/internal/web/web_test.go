@@ -150,8 +150,13 @@ func TestPairingRedeemErrors(t *testing.T) {
 	if rec := post(`{"code":"ABC","protocols":[1],"name":"bad/name"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("name status=%d", rec.Code)
 	}
-	if rec := post(`{"code":"ABC","protocols":[1],"capabilities":["shell"]}`); rec.Code != http.StatusBadRequest {
-		t.Fatalf("capabilities status=%d", rec.Code)
+	// Unknown capability names are tolerated, but the shape and count are not.
+	if rec := post(`{"code":"ABC","protocols":[1],"capabilities":["Panel"]}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("capability shape status=%d", rec.Code)
+	}
+	if rec := post(`{"code":"ABC","protocols":[1],"capabilities":["` +
+		strings.Repeat("a", 33) + `"]}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("capability length status=%d", rec.Code)
 	}
 	if rec := post(`{"code":"AAAAAAAA","protocols":[1]}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown code status=%d body=%s", rec.Code, rec.Body)
@@ -218,6 +223,50 @@ func TestPairingRedeemTrimsPaddedDetails(t *testing.T) {
 		body := `{"code":"` + code + `","protocols":[1],"` + c.field + `":"  ` + c.value + `  "}`
 		if rec := post(body); rec.Code != http.StatusBadRequest {
 			t.Fatalf("padded overlong %s=%d body=%s", c.field, rec.Code, rec.Body)
+		}
+	}
+}
+
+// modCapabilities mirrors DashboardProtocol.CAPABILITIES in the real mod.
+var modCapabilities = []string{
+	"pause", "resume", "snapshot", "panel", "swarm_enable", "swarm_disable",
+	"swarm_rank", "swarm_staff", "read_savings", "data_use", "settings_analysis",
+	"diagnostic_history",
+}
+
+// TestPairingAcceptsRealModCapabilities is the C1 regression: the exact pairing
+// body the mod sends (twelve capabilities) must be accepted, not answered 400.
+func TestPairingAcceptsRealModCapabilities(t *testing.T) {
+	s, st := newTestServer(t)
+	code, _, err := st.CreateCode("u1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"build":"0.1.1","name":"Laptop","hive":"hive_123","protocols":[1],` +
+		`"capabilities":["pause","resume","snapshot","panel","swarm_enable","swarm_disable",` +
+		`"swarm_rank","swarm_staff","read_savings","data_use","settings_analysis","diagnostic_history"],` +
+		`"code":"` + code + `"}`
+	req := httptest.NewRequest("POST", "/dashboard/api/pair/redeem", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("redeem status=%d body=%s", rec.Code, rec.Body)
+	}
+	var pair struct {
+		InstallationID int64  `json:"installationId"`
+		Credential     string `json:"credential"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pair); err != nil {
+		t.Fatal(err)
+	}
+	inst, ok := st.Installation(pair.InstallationID)
+	if !ok || len(inst.Capabilities) != len(modCapabilities) {
+		t.Fatalf("stored capabilities=%v want %d", inst.Capabilities, len(modCapabilities))
+	}
+	for i, want := range modCapabilities {
+		if inst.Capabilities[i] != want {
+			t.Fatalf("stored capabilities=%v", inst.Capabilities)
 		}
 	}
 }
@@ -326,6 +375,9 @@ func TestDashboardShellCarriesSessionCSRF(t *testing.T) {
 	if !strings.Contains(page, `<meta name="gonuts-csrf" content="`+csrf+`">`) {
 		t.Fatalf("dashboard does not carry the session CSRF: %s", page)
 	}
+	if !strings.Contains(page, `<input type="hidden" name="csrf" value="`+csrf+`">`) {
+		t.Fatalf("sign-out form does not carry the session CSRF: %s", page)
+	}
 	if strings.Contains(page, "{{CSRF}}") {
 		t.Fatal("dashboard still contains the CSRF placeholder")
 	}
@@ -356,6 +408,8 @@ func TestEmbeddedAssetsAreServed(t *testing.T) {
 		// The font is served with nosniff, so the type has to be exact rather
 		// than host-dependent.
 		{"/assets/Monocraft.ttf", "font/ttf"},
+		// The bundled font's license must ship with the binary.
+		{"/assets/Monocraft-OFL.txt", "text/plain"},
 	}
 	for _, a := range assets {
 		rec := httptest.NewRecorder()
@@ -1949,6 +2003,7 @@ func TestDevLoginAndLogout(t *testing.T) {
 		t.Fatalf("dev login disabled status=%d", rec.Code)
 	}
 
+	s.Cfg.PublicBaseURL = "http://localhost:8080"
 	s.Cfg.DevLogin = true
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/auth/dev?user=Alice%20B!", nil))
@@ -1972,9 +2027,12 @@ func TestDevLoginAndLogout(t *testing.T) {
 		t.Fatal("dev user was not stored")
 	}
 
-	// Logout drops the session and clears the cookie.
+	// Logout drops the session and clears the cookie; it carries the CSRF
+	// header and origin like any other mutation.
 	req := httptest.NewRequest("POST", "/auth/logout", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: session.Value})
+	req.Header.Set(auth.CSRFHeader, sess.CSRF)
+	req.Header.Set("Origin", "http://localhost:8080")
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard" {
@@ -1991,6 +2049,82 @@ func TestDevLoginAndLogout(t *testing.T) {
 	}
 	if _, ok := st.Session(session.Value, time.Now()); ok {
 		t.Fatal("logout left the session valid")
+	}
+}
+
+func TestLogoutRequiresCSRFAndOrigin(t *testing.T) {
+	s, st := newTestServer(t)
+	if err := st.UpsertUser(store.User{ID: "u1", Username: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	newSession := func() (string, string) {
+		t.Helper()
+		token, csrf, err := st.CreateSession("u1", time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token, csrf
+	}
+	logout := func(token, header, form, origin string) *httptest.ResponseRecorder {
+		var body io.Reader
+		if form != "" {
+			body = strings.NewReader(url.Values{"csrf": {form}}.Encode())
+		}
+		req := httptest.NewRequest("POST", "/auth/logout", body)
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		if form != "" {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		if header != "" {
+			req.Header.Set(auth.CSRFHeader, header)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	token, csrf := newSession()
+	if rec := logout(token, "", "", "https://panel.example.com"); rec.Code != http.StatusForbidden {
+		t.Fatalf("missing token status=%d", rec.Code)
+	}
+	if rec := logout(token, "wrong", "", "https://panel.example.com"); rec.Code != http.StatusForbidden {
+		t.Fatalf("mismatched token status=%d", rec.Code)
+	}
+	if rec := logout(token, csrf, "", ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("missing origin status=%d", rec.Code)
+	}
+	if _, ok := st.Session(token, time.Now()); !ok {
+		t.Fatal("a refused logout revoked the session")
+	}
+
+	rec := logout(token, csrf, "", "https://panel.example.com")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("header logout status=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+	cleared := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.CookieName && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("logout did not clear the session cookie")
+	}
+	if _, ok := st.Session(token, time.Now()); ok {
+		t.Fatal("header logout left the session valid")
+	}
+
+	// The dashboard form sends the token in the body instead of a header.
+	token, csrf = newSession()
+	rec = logout(token, "", csrf, "https://panel.example.com")
+	if rec.Code != http.StatusFound {
+		t.Fatalf("form logout status=%d body=%s", rec.Code, rec.Body)
+	}
+	if _, ok := st.Session(token, time.Now()); ok {
+		t.Fatal("form logout left the session valid")
 	}
 }
 

@@ -141,8 +141,53 @@ func TestValidators(t *testing.T) {
 	if !ValidHive("") || !ValidHive("hive_1-x") || ValidHive("hive 1") {
 		t.Fatal("ValidHive")
 	}
-	if !ValidCaps(nil) || !ValidCaps([]string{"panel", "pause"}) || ValidCaps([]string{"shell"}) {
+	// Unknown but well-shaped capabilities are accepted; only the shape and
+	// the count are bounded.
+	if !ValidCaps(nil) || !ValidCaps([]string{"panel", "pause", "read_savings"}) ||
+		ValidCaps([]string{"shell!"}) || ValidCaps([]string{strings.Repeat("a", 33)}) {
 		t.Fatal("ValidCaps")
+	}
+	tooMany := make([]string, maxCapabilities+1)
+	for i := range tooMany {
+		tooMany[i] = "panel"
+	}
+	if ValidCaps(tooMany) {
+		t.Fatal("ValidCaps accepted too many entries")
+	}
+}
+
+// modCapabilities is the exact list the real mod advertises in its pairing
+// body and hello frame (DashboardProtocol.CAPABILITIES).
+var modCapabilities = []string{
+	"pause", "resume", "snapshot", "panel", "swarm_enable", "swarm_disable",
+	"swarm_rank", "swarm_staff", "read_savings", "data_use", "settings_analysis",
+	"diagnostic_history",
+}
+
+// TestHandshakeAcceptsRealModCapabilities is the C1 regression: the relay used
+// to know only four capability names, so the real mod's twelve made every
+// handshake fail. A hello carrying all twelve must still be answered.
+func TestHandshakeAcceptsRealModCapabilities(t *testing.T) {
+	r := newWSRig(t, Options{HeartbeatSeconds: 20, MaxMessageBytes: 32768, MaxPanelInFlight: 8})
+	conn, resp, err := r.dial(t, http.Header{"Authorization": {"Bearer " + r.cred}})
+	if err != nil {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	hello := helloFrame()
+	hello["capabilities"] = modCapabilities
+	if err := conn.WriteJSON(hello); err != nil {
+		t.Fatal(err)
+	}
+	var welcome map[string]any
+	if err := conn.ReadJSON(&welcome); err != nil {
+		t.Fatal(err)
+	}
+	if welcome["type"] != "welcome" {
+		t.Fatalf("welcome=%v", welcome)
 	}
 }
 
