@@ -61,6 +61,8 @@ type Server struct {
 	// PairLimiter enforces 10/min for pairing-code creation and for redemption
 	// per client IP.
 	PairLimiter *limiter
+	// LocalLimiter enforces 10/min for local password sign-in per client IP.
+	LocalLimiter *limiter
 	// CommandLimiter enforces 60/min for commands and the global redemption
 	// budget.
 	CommandLimiter *limiter
@@ -82,6 +84,7 @@ func New(cfg config.Config, st *store.Store, hub Relay, d *auth.Discord) *Server
 		States:         &oauthStates{m: map[string]oauthState{}},
 		Limiter:        newLimiter(120, 120),
 		PairLimiter:    newLimiter(10, 10),
+		LocalLimiter:   newLimiter(10, 10),
 		CommandLimiter: newLimiter(60, 60),
 		SSE:            newSSEHub(5),
 		PanelCache:     newPanelCache(cfg.PanelCacheBytes),
@@ -96,6 +99,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /dashboard", s.dashboardPage)
 	mux.HandleFunc("GET /auth/login", s.authLogin)
 	mux.HandleFunc("GET /auth/callback", s.authCallback)
+	mux.HandleFunc("POST /auth/local", s.authLocal)
 	mux.HandleFunc("POST /auth/logout", s.authLogout)
 	mux.HandleFunc("GET /auth/dev", s.authDev)
 	mux.HandleFunc("GET /dashboard/api/state", s.apiState)
@@ -270,7 +274,7 @@ func (s *Server) dashboardPage(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, _, ok := s.session(r)
 	if !ok {
-		b, err := webassets.FS.ReadFile("login.html")
+		b, err := s.loginHTML(r.URL.Query().Get("error") == "local")
 		if err != nil {
 			http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 			return
@@ -299,4 +303,50 @@ func dashboardHTML(csrf string) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(strings.ReplaceAll(string(b), "{{CSRF}}", csrf)), nil
+}
+
+// Sign-in page fragments. login.html carries the chrome and these fill its
+// three slots; every fragment is static, so nothing from the request is ever
+// interpolated into the HTML.
+const (
+	loginLocalForm = `<form class="local-form" method="post" action="/auth/local">
+    <label for="local-password">Password</label>
+    <input id="local-password" name="password" type="password" autocomplete="current-password" required autofocus>
+    <button class="btn gold wide" type="submit">Sign in</button>
+  </form>`
+	loginDiscordLink = `<a class="btn gold wide" href="/auth/login">Sign in with Discord</a>`
+	loginDivider     = `<p class="login-divider">or</p>`
+	loginNoMethod    = `<p class="login-note">No sign-in method configured. Set GONUTS_LOCAL_PASSWORD_HASH (or Discord credentials) and restart the panel.</p>`
+	loginLocalError  = `<p class="login-error" role="alert">Incorrect password.</p>`
+)
+
+// loginHTML renders the signed-out page: a password form when a local password
+// is configured, a Discord link when Discord is enabled, both with an "or"
+// divider when both exist, and an explanation when neither does.
+func (s *Server) loginHTML(localError bool) ([]byte, error) {
+	b, err := webassets.FS.ReadFile("login.html")
+	if err != nil {
+		return nil, err
+	}
+	local := s.Cfg.LocalAuthEnabled()
+	form, link, notice := "", "", ""
+	switch {
+	case local && s.Cfg.DiscordEnabled:
+		form = loginLocalForm
+		link = loginDivider + "\n  " + loginDiscordLink
+	case local:
+		form = loginLocalForm
+	case s.Cfg.DiscordEnabled:
+		link = loginDiscordLink
+	default:
+		notice = loginNoMethod
+	}
+	if local && localError {
+		notice = loginLocalError
+	}
+	page := string(b)
+	page = strings.ReplaceAll(page, "{{ERROR}}", notice)
+	page = strings.ReplaceAll(page, "{{LOCAL_FORM}}", form)
+	page = strings.ReplaceAll(page, "{{DISCORD_LINK}}", link)
+	return []byte(page), nil
 }

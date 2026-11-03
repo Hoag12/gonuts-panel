@@ -21,6 +21,16 @@ type Config struct {
 	PanelCacheBytes     int64
 	OAuthAuthorizeURL   string
 	DiscordAPIBase      string
+	// DiscordEnabled is true when both the client id and secret are set. The
+	// Discord routes answer 404 otherwise.
+	DiscordEnabled bool
+	// LocalPasswordHash is the preferred PBKDF2 hash for local sign-in.
+	LocalPasswordHash string
+	// LocalPassword is a plaintext fallback for local sign-in. It is compared
+	// in constant time, but operators should prefer LocalPasswordHash.
+	LocalPassword string
+	// LocalUser is the account id and display name local sign-in creates.
+	LocalUser string
 }
 
 func Load() (Config, error) {
@@ -47,7 +57,13 @@ func Load() (Config, error) {
 		PanelCacheBytes:     16 << 20,
 		OAuthAuthorizeURL:   env("GONUTS_OAUTH_AUTHORIZE_URL", "https://discord.com/oauth2/authorize"),
 		DiscordAPIBase:      env("GONUTS_DISCORD_API_BASE", "https://discord.com/api"),
+		LocalPasswordHash:   strings.TrimSpace(os.Getenv("GONUTS_LOCAL_PASSWORD_HASH")),
+		// Not trimmed: a password may legitimately end in a space, and the
+		// hash generator uses the exact bytes the operator typed.
+		LocalPassword: os.Getenv("GONUTS_LOCAL_PASSWORD"),
+		LocalUser:     env("GONUTS_LOCAL_USER", "local"),
 	}
+	cfg.DiscordEnabled = cfg.DiscordClientID != "" && cfg.DiscordClientSecret != ""
 	for _, id := range strings.Split(os.Getenv("GONUTS_ALLOWED_DISCORD_IDS"), ",") {
 		if id = strings.TrimSpace(id); id != "" {
 			cfg.AllowedDiscordIDs[id] = true
@@ -60,10 +76,17 @@ func Load() (Config, error) {
 	if cfg.DevLogin && !IsLoopbackBaseURL(base) {
 		return Config{}, fmt.Errorf("GONUTS_DEV_LOGIN requires a loopback GONUTS_PUBLIC_BASE_URL (localhost, 127.0.0.1, or [::1])")
 	}
-	if !cfg.DevLogin && (cfg.DiscordClientID == "" || cfg.DiscordClientSecret == "") {
-		return Config{}, fmt.Errorf("Discord client id/secret are required unless GONUTS_DEV_LOGIN=1")
+	if !cfg.DevLogin && !cfg.DiscordEnabled && !cfg.LocalAuthEnabled() {
+		return Config{}, fmt.Errorf("Discord client id/secret or GONUTS_LOCAL_PASSWORD_HASH/GONUTS_LOCAL_PASSWORD are required unless GONUTS_DEV_LOGIN=1")
 	}
 	return cfg, nil
+}
+
+// LocalAuthEnabled reports whether a local password or hash can sign a browser
+// in. A whitespace-only plaintext value counts as unset, but spaces inside a
+// real password are preserved. LocalUser always has a value (default "local").
+func (c Config) LocalAuthEnabled() bool {
+	return c.LocalPasswordHash != "" || strings.TrimSpace(c.LocalPassword) != ""
 }
 
 // IsLoopbackBaseURL reports whether base is an http(s) origin whose host is

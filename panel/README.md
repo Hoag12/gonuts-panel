@@ -1,16 +1,18 @@
 # GoNuts self-hosted panel
 
 `gonuts-panel` is the server behind the self-hosted GoNuts dashboard. It serves
-the Discord sign-in pages and dashboard, relays each client's panel page from
-the mod's WebSocket connection, and stores installations, pairing codes, and
-sessions in a single `state.json`.
+the sign-in pages and dashboard, relays each client's panel page from the mod's
+WebSocket connection, and stores installations, pairing codes, and sessions in
+a single `state.json`. Sign-in is Discord OAuth, a local password/PIN, or the
+loopback-only development link.
 
 Everything is served from one origin. The browser only talks to this process:
 no CDN, no analytics, no third-party requests; Monocraft is bundled under the
 SIL Open Font License (`web/assets/Monocraft-OFL.txt`).
 
 - `GET /healthz` — liveness probe.
-- `/auth/*` — Discord OAuth (or `GONUTS_DEV_LOGIN=1` local sign-in).
+- `/auth/*` — Discord OAuth, local password sign-in (`POST /auth/local`), or
+  `GONUTS_DEV_LOGIN=1` local sign-in.
 - `/dashboard` — signed-in panel; the sign-in page when signed out.
 - `/dashboard/ws/client` — the mod's WebSocket.
 - `/dashboard/api/*` — pairing, telemetry-check, and command endpoints.
@@ -18,7 +20,7 @@ SIL Open Font License (`web/assets/Monocraft-OFL.txt`).
 ## Requirements
 
 - Go 1.27 (only for building/running natively; the container carries its own).
-- A Discord application (see below) unless you run with `GONUTS_DEV_LOGIN=1`.
+- A Discord application (see below), a local password, or `GONUTS_DEV_LOGIN=1`.
 - No database: state lives in `GONUTS_DATA_DIR/state.json` (mode 0600).
 
 ## Run in a GitHub Codespace
@@ -81,6 +83,9 @@ The repository ships `.devcontainer/devcontainer.json`: a Codespace gets Go
 2. OAuth2 → Redirects → add `https://YOUR_HOST/auth/callback`, where
    `YOUR_HOST` is the exact host in `GONUTS_PUBLIC_BASE_URL`. Codespaces use the
    forwarded origin from step 2 above; a NAS uses its reverse-proxy hostname.
+   Discord only accepts `https://` redirects (plus `http://localhost`), so a
+   NAS reached as `http://192.168.x.x:8080` cannot use Discord OAuth — use the
+   local password there.
 3. OAuth2 → copy the **Client ID** and **Client Secret** into `.env` for a
    Docker deployment (or export them as `GONUTS_DISCORD_CLIENT_ID` and
    `GONUTS_DISCORD_CLIENT_SECRET` for a native run). The panel only requests
@@ -133,6 +138,64 @@ The panel itself accepts an `http://` origin. For a LAN-only install set
 `GONUTS_PUBLIC_BASE_URL=http://192.168.x.x:8080`, `GONUTS_COOKIE_SECURE=0`, and
 `GONUTS_TRUST_PROXY=0`. The mod only accepts `http://` for loopback and RFC1918
 addresses; every other origin must be HTTPS.
+
+Discord OAuth cannot use a non-localhost `http://` callback, so a LAN-only
+install signs in with a local password instead (next section). Discord and the
+local password can also be enabled together.
+
+## Local password on a NAS
+
+The panel can sign in with a local password (a PIN works too) instead of
+Discord. It is meant for a NAS on a trusted LAN or a host behind an HTTPS
+reverse proxy.
+
+1. Pick a password of at least four characters and generate its PBKDF2 hash.
+   The hash generator runs before any configuration is read, prints only the
+   hash, and exits:
+
+   ```bash
+   cd panel
+   ../.tools/go/bin/go run ./cmd/gonuts-panel -hash-password 'your password'
+   # pbkdf2-sha256$600000$...$...
+   ```
+
+   A built binary does the same:
+   `./gonuts-panel -hash-password 'your password'`. Quote the password, and
+   note that a command-line argument is visible in the shell history and the
+   process table while it runs; generate the hash on a trusted machine.
+
+2. Configure the panel. For a LAN-only native run on the NAS:
+
+   ```bash
+   GONUTS_PUBLIC_BASE_URL=http://<LAN-IP>:8080
+   GONUTS_COOKIE_SECURE=0
+   GONUTS_TRUST_PROXY=0
+   GONUTS_LOCAL_PASSWORD_HASH=pbkdf2-sha256$600000$...$...
+   GONUTS_LOCAL_USER=owner
+   GONUTS_DATA_DIR=/volume1/docker/gonuts-panel/data
+   ```
+
+   `GONUTS_LOCAL_PASSWORD` (plaintext) is a fallback for when generating a hash
+   is inconvenient; it is compared in constant time but the deployment should
+   prefer `GONUTS_LOCAL_PASSWORD_HASH`. `GONUTS_LOCAL_USER` names the account
+   the panel creates on first sign-in and defaults to `local`.
+
+3. Start the panel (see [Native binary](#native-binary-no-docker)) and open
+   `http://<LAN-IP>:8080`. The sign-in page shows a password field; the ping,
+   pairing, and dashboard flows are unchanged.
+
+Notes:
+
+- Sign-in attempts are limited to 10 per minute per client IP; a wrong password
+  redirects back to the sign-in page with a generic "Incorrect password."
+- A local sign-in creates a normal 30-day session in `state.json`, exactly like
+  a Discord sign-in, so the dashboard, SSE stream, and panel relay all work.
+- Plain HTTP sends the password unencrypted over the network. Use it only on a
+  LAN you trust; otherwise terminate TLS in the DSM reverse proxy and keep
+  `GONUTS_COOKIE_SECURE=1`.
+- With neither Discord nor a local password (and no `GONUTS_DEV_LOGIN=1`), the
+  panel refuses to start; with a local password and no Discord credentials, the
+  `/auth/login` and `/auth/callback` Discord routes answer 404.
 
 ## Native binary (no Docker)
 

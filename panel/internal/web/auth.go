@@ -76,10 +76,11 @@ func (o *oauthStates) take(state string) (string, bool) {
 const oauthStateTTL = 10 * time.Minute
 
 // authLogin starts the Discord authorization-code flow with PKCE. The verifier
-// is kept server-side and the state is bound to a short-lived cookie.
+// is kept server-side and the state is bound to a short-lived cookie. Without
+// Discord credentials the route does not exist.
 func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
-	if s.Discord == nil {
-		http.Error(w, "sign-in unavailable", http.StatusServiceUnavailable)
+	if !s.Cfg.DiscordEnabled || s.Discord == nil {
+		http.NotFound(w, r)
 		return
 	}
 	state, err := auth.RandomToken(24)
@@ -100,8 +101,13 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 // authCallback completes the Discord flow: it validates the state against the
 // cookie and the server-side verifier store, exchanges the code, checks the
 // optional allowlist, and creates a browser session. The OAuth cookie is
-// cleared on every outcome.
+// cleared on every outcome. Without Discord credentials the route does not
+// exist.
 func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
+	if !s.Cfg.DiscordEnabled {
+		http.NotFound(w, r)
+		return
+	}
 	queryState := r.URL.Query().Get("state")
 	c, cookieErr := r.Cookie(auth.OAuthCookie)
 	cookieState := ""
@@ -167,6 +173,74 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	auth.SetSessionCookie(w, sessToken, s.Cfg.CookieSecure)
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
+}
+
+// authLocal signs in with the configured local password. It is a form POST
+// from the panel's own sign-in page, so it requires a matching Origin, is rate
+// limited per client IP, and never logs the submitted password. Failures
+// redirect back to the sign-in page with a generic error instead of a status
+// code, so the browser flow stays uniform.
+func (s *Server) authLocal(w http.ResponseWriter, r *http.Request) {
+	if !s.Cfg.LocalAuthEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	if !s.LocalLimiter.allow("local:"+s.clientIP(r), time.Now()) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"message": "too many sign-in attempts",
+			"status":  http.StatusTooManyRequests,
+		})
+		return
+	}
+	if !auth.OriginAllowed(r, s.Cfg.PublicBaseURL) {
+		http.Error(w, "invalid request origin", http.StatusForbidden)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid sign-in request", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyLocalPassword(r.PostForm.Get("password")) {
+		http.Redirect(w, r, "/dashboard?error=local", http.StatusSeeOther)
+		return
+	}
+	id := s.Cfg.LocalUser
+	if id == "" {
+		id = "local"
+	}
+	if err := s.Store.UpsertUser(store.User{
+		ID:         id,
+		Username:   id,
+		GlobalName: id,
+		CreatedAt:  time.Now().UnixMilli(),
+	}); err != nil {
+		http.Error(w, "sign-in failed", http.StatusInternalServerError)
+		return
+	}
+	token, _, err := s.Store.CreateSession(id, time.Now())
+	if err != nil {
+		http.Error(w, "sign-in failed", http.StatusInternalServerError)
+		return
+	}
+	auth.SetSessionCookie(w, token, s.Cfg.CookieSecure)
+	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+}
+
+// verifyLocalPassword checks a submitted password against the configured hash,
+// falling back to a constant-time compare for the plaintext form. Anything
+// unconfigured or empty fails closed.
+func (s *Server) verifyLocalPassword(password string) bool {
+	if password == "" {
+		return false
+	}
+	if s.Cfg.LocalPasswordHash != "" {
+		return auth.VerifyPassword(s.Cfg.LocalPasswordHash, password)
+	}
+	if s.Cfg.LocalPassword != "" {
+		return auth.Equal(s.Cfg.LocalPassword, password)
+	}
+	return false
 }
 
 // authDev creates a local test session. It is disabled unless GONUTS_DEV_LOGIN

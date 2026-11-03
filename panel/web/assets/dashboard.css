@@ -76,3 +76,16 @@ main { max-width:1180px; margin:0 auto; padding:6px 20px 40px; }
 .login .logo { width:220px; max-width:80%; image-rendering:pixelated; }
 .login h1 { color:var(--gold); font-weight:400; font-size:20px; }
 .login p { color:var(--secondary); }
+.local-form { display:flex; flex-direction:column; gap:10px; margin:16px 0 0; text-align:left; }
+.local-form label { color:var(--secondary); font-size:12px; }
+.local-form input { font:inherit; font-size:14px; width:100%; min-height:40px; padding:10px 12px;
+  color:var(--text); background:var(--inset); border:1px solid var(--edge); border-radius:5px; }
+.local-form input:focus { border-color:var(--gold); outline:2px solid var(--gold); outline-offset:1px; }
+.local-form .btn { margin-top:4px; }
+.login .login-error { color:var(--bad); background:rgba(255,133,140,.08); border:1px solid var(--bad);
+  border-radius:5px; padding:8px 12px; margin:14px 0 0; }
+.login .login-note { color:var(--warn); background:var(--inset); border:1px solid var(--edge);
+  border-radius:5px; padding:8px 12px; margin:14px 0 0; }
+.login .login-divider { display:flex; align-items:center; gap:10px; margin:16px 0;
+  color:var(--muted); font-size:11px; text-transform:lowercase; }
+.login .login-divider::before, .login .login-divider::after { content:""; flex:1; border-top:1px solid var(--edge); }

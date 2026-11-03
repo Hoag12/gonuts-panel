@@ -6,6 +6,8 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -21,6 +23,20 @@ import (
 )
 
 func main() {
+	// -hash-password runs before config.Load so generating a hash needs no
+	// valid panel configuration. Only the hash is printed; the password itself
+	// is never echoed or logged.
+	hashPassword := flag.String("hash-password", "", "print a PBKDF2 hash for this password for GONUTS_LOCAL_PASSWORD_HASH, then exit")
+	flag.Parse()
+	if *hashPassword != "" {
+		hash, err := auth.HashPassword(*hashPassword, 0)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(hash)
+		return
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
@@ -44,10 +60,13 @@ func main() {
 	go hub.Start(ctx)
 	defer hub.Stop()
 
-	d := auth.NewDiscord(cfg)
-	// The callback path is owned by the web layer; PUBLIC_BASE_URL is the only
-	// place the externally visible origin comes from.
-	d.RedirectURI = cfg.PublicBaseURL + "/auth/callback"
+	var d *auth.Discord
+	if cfg.DiscordEnabled {
+		d = auth.NewDiscord(cfg)
+		// The callback path is owned by the web layer; PUBLIC_BASE_URL is the
+		// only place the externally visible origin comes from.
+		d.RedirectURI = cfg.PublicBaseURL + "/auth/callback"
+	}
 
 	// Every request context descends from this one, so canceling it is what
 	// ends the long-lived dashboard SSE streams. http.Server.Shutdown does not

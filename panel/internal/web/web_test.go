@@ -292,6 +292,7 @@ func TestHandlersNoLongerAnswer501(t *testing.T) {
 		{"GET", "/dashboard"},
 		{"GET", "/auth/login"},
 		{"GET", "/auth/callback"},
+		{"POST", "/auth/local"},
 		{"POST", "/auth/logout"},
 		{"GET", "/auth/dev"},
 		{"GET", "/dashboard/api/state"},
@@ -340,6 +341,7 @@ func TestHealthHeadersAndRootRedirect(t *testing.T) {
 
 func TestDashboardShellCarriesSessionCSRF(t *testing.T) {
 	s, st := newTestServer(t)
+	s.Cfg.DiscordEnabled = true // the signed-out page then links Discord
 	if err := st.UpsertUser(store.User{ID: "u1", Username: "u1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1859,7 +1861,7 @@ func TestOAuthLoginAndCallback(t *testing.T) {
 	}
 	defer st.Close()
 	d := fakeDiscordUser(t, "42", "alice", "Alice")
-	s := New(config.Config{PublicBaseURL: "https://panel.example.com"}, st, nil, d)
+	s := New(config.Config{PublicBaseURL: "https://panel.example.com", DiscordEnabled: true}, st, nil, d)
 
 	login := httptest.NewRecorder()
 	s.Handler().ServeHTTP(login, httptest.NewRequest("GET", "/auth/login", nil))
@@ -1926,7 +1928,7 @@ func TestOAuthCallbackRejectsBadState(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	s := New(config.Config{PublicBaseURL: "https://panel.example.com"}, st, nil, nil)
+	s := New(config.Config{PublicBaseURL: "https://panel.example.com", DiscordEnabled: true}, st, nil, nil)
 
 	cases := []struct {
 		name   string
@@ -1978,6 +1980,7 @@ func TestOAuthCallbackRejectsDisallowedUser(t *testing.T) {
 	d := fakeDiscordUser(t, "42", "alice", "Alice")
 	s := New(config.Config{
 		PublicBaseURL:     "https://panel.example.com",
+		DiscordEnabled:    true,
 		AllowedDiscordIDs: map[string]bool{"99": true},
 	}, st, nil, d)
 
@@ -2129,15 +2132,17 @@ func TestLogoutRequiresCSRFAndOrigin(t *testing.T) {
 }
 
 func TestAuthLoginWithoutDiscord(t *testing.T) {
-	s, _ := newTestServer(t) // nil Discord client
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/auth/login", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
-	}
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == auth.OAuthCookie {
-			t.Fatal("unavailable sign-in still set an OAuth cookie")
+	s, _ := newTestServer(t) // nil Discord client, Discord disabled
+	for _, path := range []string{"/auth/login", "/auth/callback?state=x&code=y"} {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status=%d body=%s", path, rec.Code, rec.Body)
+		}
+		for _, c := range rec.Result().Cookies() {
+			if c.Name == auth.OAuthCookie {
+				t.Fatalf("%s set an OAuth cookie", path)
+			}
 		}
 	}
 }
@@ -2441,4 +2446,272 @@ func waitWeb(t *testing.T, what string, ok func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timeout waiting for %s", what)
+}
+
+// newLocalServer builds a panel that only offers the local password form. The
+// hash uses a low iteration count so the test stays fast.
+func newLocalServer(t *testing.T, password, user string) (*Server, *store.Store) {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	hash, err := auth.HashPassword(password, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(config.Config{
+		PublicBaseURL:     "https://panel.example.com",
+		LocalPasswordHash: hash,
+		LocalUser:         user,
+	}, st, nil, nil), st
+}
+
+// localLogin posts the sign-in form. An empty origin omits the header; an
+// empty ip leaves the recorder's default remote address.
+func localLogin(s *Server, password, origin, ip string) *httptest.ResponseRecorder {
+	body := url.Values{"password": {password}}.Encode()
+	req := httptest.NewRequest("POST", "/auth/local", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	if ip != "" {
+		req.RemoteAddr = ip + ":1234"
+	}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestLocalLoginCreatesSession(t *testing.T) {
+	s, st := newLocalServer(t, "hunter2", "owner")
+
+	rec := localLogin(s, "hunter2", "https://panel.example.com", "")
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("status=%d location=%q body=%s", rec.Code, rec.Header().Get("Location"), rec.Body)
+	}
+	var token string
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.CookieName {
+			token = c.Value
+			if !c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.MaxAge != 30*24*60*60 {
+				t.Fatalf("session cookie=%+v", c)
+			}
+		}
+	}
+	if token == "" {
+		t.Fatal("local sign-in set no session cookie")
+	}
+	sess, ok := st.Session(token, time.Now())
+	if !ok || sess.DiscordID != "owner" || sess.CSRF == "" {
+		t.Fatalf("session=%+v ok=%v", sess, ok)
+	}
+	user, ok := st.User("owner")
+	if !ok || user.Username != "owner" || user.GlobalName != "owner" || user.CreatedAt == 0 {
+		t.Fatalf("user=%+v ok=%v", user, ok)
+	}
+
+	// The new session reaches the dashboard shell rather than the sign-in page.
+	req := httptest.NewRequest("GET", "/dashboard", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	page := httptest.NewRecorder()
+	s.Handler().ServeHTTP(page, req)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `name="gonuts-csrf" content="`+sess.CSRF+`"`) {
+		t.Fatalf("dashboard status=%d body=%s", page.Code, page.Body)
+	}
+
+	// The default account id is a fixed string, not attacker input.
+	s2, st2 := newLocalServer(t, "hunter2", "")
+	if rec := localLogin(s2, "hunter2", "https://panel.example.com", ""); rec.Code != http.StatusSeeOther {
+		t.Fatalf("default-user status=%d body=%s", rec.Code, rec.Body)
+	}
+	if _, ok := st2.User("local"); !ok {
+		t.Fatal("default local user was not stored as \"local\"")
+	}
+}
+
+func TestLocalLoginWrongPasswordAndOrigin(t *testing.T) {
+	s, st := newLocalServer(t, "hunter2", "owner")
+
+	for name, rec := range map[string]*httptest.ResponseRecorder{
+		"wrong password": localLogin(s, "hunter3", "https://panel.example.com", ""),
+		"empty password": localLogin(s, "", "https://panel.example.com", ""),
+	} {
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/dashboard?error=local" {
+			t.Fatalf("%s: status=%d location=%q", name, rec.Code, rec.Header().Get("Location"))
+		}
+		for _, c := range rec.Result().Cookies() {
+			if c.Name == auth.CookieName {
+				t.Fatalf("%s: a failed sign-in set a session cookie", name)
+			}
+		}
+	}
+	if n := len(st.State().Sessions); n != 0 {
+		t.Fatalf("failed sign-ins created %d sessions", n)
+	}
+
+	// Mutations must come from the panel's own origin.
+	for name, origin := range map[string]string{"missing origin": "", "cross origin": "https://evil.example"} {
+		rec := localLogin(s, "hunter2", origin, "")
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("%s status=%d body=%s", name, rec.Code, rec.Body)
+		}
+	}
+	if n := len(st.State().Sessions); n != 0 {
+		t.Fatalf("origin-rejected sign-ins created %d sessions", n)
+	}
+
+	// The sign-in page reports the generic error and keeps the form.
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/dashboard?error=local", nil))
+	page := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(page, "Incorrect password.") ||
+		!strings.Contains(page, `action="/auth/local"`) {
+		t.Fatalf("error page status=%d body=%s", rec.Code, page)
+	}
+	// Without the flag the error is absent.
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/dashboard", nil))
+	if strings.Contains(rec.Body.String(), "Incorrect password.") {
+		t.Fatal("sign-in page shows an error without ?error=local")
+	}
+}
+
+func TestLocalLoginRateLimit(t *testing.T) {
+	s, _ := newLocalServer(t, "hunter2", "owner")
+	s.LocalLimiter = newLimiter(1, 1) // one attempt per minute, burst of one
+
+	if rec := localLogin(s, "wrong", "https://panel.example.com", "192.0.2.1"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("first attempt status=%d body=%s", rec.Code, rec.Body)
+	}
+	rec := localLogin(s, "hunter2", "https://panel.example.com", "192.0.2.1")
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), `"status":429`) {
+		t.Fatalf("second attempt status=%d body=%s", rec.Code, rec.Body)
+	}
+	// Another client IP has its own bucket.
+	if rec := localLogin(s, "hunter2", "https://panel.example.com", "192.0.2.2"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("other IP status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestLocalLoginPlaintextFallback(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	s := New(config.Config{
+		PublicBaseURL: "https://panel.example.com",
+		LocalPassword: "hunter2",
+		LocalUser:     "owner",
+	}, st, nil, nil)
+
+	if rec := localLogin(s, "hunter2", "https://panel.example.com", ""); rec.Code != http.StatusSeeOther {
+		t.Fatalf("plaintext sign-in status=%d body=%s", rec.Code, rec.Body)
+	}
+	if rec := localLogin(s, "wrong", "https://panel.example.com", ""); rec.Header().Get("Location") != "/dashboard?error=local" {
+		t.Fatalf("plaintext wrong password location=%q", rec.Header().Get("Location"))
+	}
+
+	// A configured hash takes precedence over the plaintext fallback.
+	hash, err := auth.HashPassword("hashed", 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Cfg.LocalPasswordHash = hash
+	if rec := localLogin(s, "hunter2", "https://panel.example.com", ""); rec.Header().Get("Location") != "/dashboard?error=local" {
+		t.Fatal("plaintext password accepted while a hash is configured")
+	}
+	if rec := localLogin(s, "hashed", "https://panel.example.com", ""); rec.Code != http.StatusSeeOther {
+		t.Fatalf("hashed sign-in status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestLocalLoginUnconfiguredIs404(t *testing.T) {
+	s, _ := newTestServer(t) // neither Discord nor a local password
+	rec := localLogin(s, "hunter2", "https://panel.example.com", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestLoginPageSignInModes(t *testing.T) {
+	hash, err := auth.HashPassword("hunter2", 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		cfg     config.Config
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "local only",
+			cfg:     config.Config{LocalPasswordHash: hash},
+			want:    []string{`action="/auth/local"`, `type="password"`, `autocomplete="current-password"`, "Sign in"},
+			notWant: []string{"/auth/login", "No sign-in method configured", "login-divider", "{{"},
+		},
+		{
+			name:    "discord only",
+			cfg:     config.Config{DiscordEnabled: true},
+			want:    []string{`href="/auth/login"`, "Sign in with Discord"},
+			notWant: []string{`action="/auth/local"`, "No sign-in method configured", "login-divider", "{{"},
+		},
+		{
+			name:    "both",
+			cfg:     config.Config{DiscordEnabled: true, LocalPasswordHash: hash},
+			want:    []string{`action="/auth/local"`, `href="/auth/login"`, "login-divider"},
+			notWant: []string{"No sign-in method configured", "{{"},
+		},
+		{
+			name:    "neither",
+			cfg:     config.Config{},
+			want:    []string{"No sign-in method configured"},
+			notWant: []string{`action="/auth/local"`, `href="/auth/login"`, "{{"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { st.Close() })
+			tc.cfg.PublicBaseURL = "https://panel.example.com"
+			s := New(tc.cfg, st, nil, nil)
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/dashboard", nil))
+			page := rec.Body.String()
+			if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), "text/html") ||
+				rec.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("status=%d headers=%v", rec.Code, rec.Header())
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(page, want) {
+					t.Fatalf("page missing %q:\n%s", want, page)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(page, notWant) {
+					t.Fatalf("page contains %q:\n%s", notWant, page)
+				}
+			}
+		})
+	}
+
+	// The error text is only rendered when a local password can be tried.
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	s := New(config.Config{PublicBaseURL: "https://panel.example.com", DiscordEnabled: true}, st, nil, nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/dashboard?error=local", nil))
+	if strings.Contains(rec.Body.String(), "Incorrect password.") {
+		t.Fatal("Discord-only page renders the local password error")
+	}
 }
