@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1545,6 +1546,85 @@ func TestSSEStreamAndTabLimit(t *testing.T) {
 	anon.Body.Close()
 	if anon.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("anonymous stream status=%d", anon.StatusCode)
+	}
+}
+
+// TestSSEExitsWhenBaseContextCanceled proves a dashboard stream ends when the
+// server's base context is canceled. main cancels that context before
+// http.Server.Shutdown, which never closes active connections; without it a
+// single open dashboard tab makes shutdown wait out the whole deadline and
+// then cut the stream off at process exit.
+func TestSSEExitsWhenBaseContextCanceled(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	if err := st.UpsertUser(store.User{ID: "u1", Username: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := st.CreateSession("u1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1)}
+	s := New(config.Config{PublicBaseURL: "https://panel.example.com"}, st, fr, nil)
+
+	openStreams := func() int {
+		s.SSE.mu.Lock()
+		defer s.SSE.mu.Unlock()
+		return s.SSE.users["u1"]
+	}
+
+	base, cancelBase := context.WithCancel(context.Background())
+	ts := httptest.NewUnstartedServer(s.Handler())
+	ts.Config.BaseContext = func(net.Listener) context.Context { return base }
+	ts.Start()
+	t.Cleanup(func() {
+		cancelBase()
+		ts.Close()
+	})
+
+	req, err := http.NewRequest("GET", ts.URL+"/dashboard/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream status=%d", resp.StatusCode)
+	}
+	lines := scanEvents(resp.Body)
+	waitEvent(t, lines, "event: update")
+	if n := openStreams(); n != 1 {
+		t.Fatalf("open streams before cancel=%d", n)
+	}
+
+	// The handler must return on its own: the response ends and the line
+	// channel closes.
+	cancelBase()
+	timeout := time.After(5 * time.Second)
+	for closed := false; !closed; {
+		select {
+		case _, ok := <-lines:
+			closed = !ok
+		case <-timeout:
+			t.Fatal("stream did not end after the base context was canceled")
+		}
+	}
+	if n := openStreams(); n != 0 {
+		t.Fatalf("stream slot not released after cancel: %d", n)
+	}
+
+	// With the stream gone, graceful shutdown has nothing left to wait on.
+	shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := ts.Config.Shutdown(shutdown); err != nil {
+		t.Fatalf("shutdown after the stream ended: %v", err)
 	}
 }
 

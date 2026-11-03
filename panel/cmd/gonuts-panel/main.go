@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os/signal"
 	"syscall"
@@ -48,11 +49,20 @@ func main() {
 	// place the externally visible origin comes from.
 	d.RedirectURI = cfg.PublicBaseURL + "/auth/callback"
 
+	// Every request context descends from this one, so canceling it is what
+	// ends the long-lived dashboard SSE streams. http.Server.Shutdown does not
+	// close active connections, so without this a single open dashboard tab
+	// would make shutdown wait out the whole deadline and then cut the stream
+	// off at process exit.
+	base, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           web.New(cfg, st, hub, d).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return base },
 	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -62,9 +72,17 @@ func main() {
 	log.Printf("gonuts-panel listening on %s", cfg.Addr)
 
 	<-ctx.Done()
+	// Stop the streams before draining so Shutdown only has finite requests
+	// left to wait on.
+	cancelBase()
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = srv.Shutdown(shutdown)
+	if err := srv.Shutdown(shutdown); err != nil {
+		// A request that never finishes must not keep the process alive; close
+		// the remaining connections and persist what we have.
+		log.Printf("gonuts-panel: graceful shutdown: %v", err)
+		_ = srv.Close()
+	}
 	// Stop the relay first so its last coalesced telemetry frame is flushed,
 	// then persist the final state. Both calls are safe to repeat on the
 	// deferred cleanup path above.
