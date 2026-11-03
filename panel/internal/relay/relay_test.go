@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -750,4 +751,415 @@ func TestNewHubClearsStaleOnlineFlags(t *testing.T) {
 	if got, _ := reopened.Installation(inst.ID); got.Online {
 		t.Fatal("cleared online flag was not persisted")
 	}
+}
+
+func startWS(t *testing.T, panelTimeout time.Duration) (*store.Store, *Hub, *store.Installation, *websocket.Conn, func()) {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHub(st, Options{HeartbeatSeconds: 20, MaxMessageBytes: 32768,
+		MaxPanelInFlight: 8, PanelTimeout: panelTimeout})
+	ctx, cancel := context.WithCancel(context.Background())
+	go h.Start(ctx)
+	ts := httptest.NewServer(http.HandlerFunc(h.ServeWS))
+	code, _, err := st.CreateCode("u1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, cred, err := st.RedeemCode(code, "Bot", "0.1.2", "", []string{"panel"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(ts.URL, "http"),
+		http.Header{"Authorization": {"Bearer " + cred}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "hello", "protocols": []int{1},
+		"build": "0.1.2", "name": "Bot", "hive": "", "capabilities": []string{"panel"}}); err != nil {
+		t.Fatal(err)
+	}
+	var welcome map[string]any
+	if err := conn.ReadJSON(&welcome); err != nil {
+		t.Fatal(err)
+	}
+	cleanup := func() { conn.Close(); ts.Close(); cancel(); h.Stop(); st.Close() }
+	return st, h, inst, conn, cleanup
+}
+
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %s", what)
+}
+
+func TestCommandAckResult(t *testing.T) {
+	st, h, inst, conn, cleanup := startWS(t, time.Second)
+	defer cleanup()
+	go func() {
+		for {
+			var f map[string]any
+			if conn.ReadJSON(&f) != nil {
+				return
+			}
+			if f["type"] == "command" {
+				id, _ := f["id"].(string)
+				conn.WriteJSON(map[string]any{"type": "ack", "id": id})
+				conn.WriteJSON(map[string]any{"type": "result", "id": id,
+					"status": "completed", "reason": "trading paused"})
+			}
+		}
+	}()
+	id, err := h.SendCommand(inst.ID, "pause")
+	if err != nil || id == "" {
+		t.Fatalf("send: %v %q", err, id)
+	}
+	waitFor(t, "completed command", func() bool {
+		c := st.LastCommand(inst.ID)
+		return c != nil && c.ID == id && c.State == "completed" && c.Reason == "trading paused"
+	})
+}
+
+func TestPanelRequestMatchesID(t *testing.T) {
+	_, h, inst, conn, cleanup := startWS(t, time.Second)
+	defer cleanup()
+	go func() {
+		var f map[string]any
+		if conn.ReadJSON(&f) != nil {
+			return
+		}
+		id, _ := f["id"].(string)
+		conn.WriteJSON(map[string]any{"type": "panel_result", "id": id, "status": 200,
+			"contentType": "text/html; charset=utf-8", "body": "<html>ok</html>"})
+	}()
+	res, err := h.PanelRequest(context.Background(), inst.ID, map[string]any{"op": "page"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != 200 || !strings.Contains(string(res.Body), "ok") {
+		t.Fatalf("result=%+v", res)
+	}
+}
+
+func TestPanelTimeoutAndOffline(t *testing.T) {
+	_, h, inst, conn, cleanup := startWS(t, 100*time.Millisecond)
+	defer cleanup()
+	// Leave the panel frame unanswered so the broker times out.
+	go func() { var f map[string]any; _ = conn.ReadJSON(&f) }()
+	if _, err := h.PanelRequest(context.Background(), inst.ID, map[string]any{"op": "page"}); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("expected ErrTimeout, got %v", err)
+	}
+	h.CloseInstallation(inst.ID, 4403, "revoked")
+	waitFor(t, "offline", func() bool { return !h.Online(inst.ID) })
+	if _, err := h.PanelRequest(context.Background(), inst.ID, map[string]any{"op": "page"}); !errors.Is(err, ErrOffline) {
+		t.Fatalf("expected ErrOffline, got %v", err)
+	}
+}
+
+// TestCommandExpiry exercises the 30 s result deadline with a short TTL.
+func TestCommandExpiry(t *testing.T) {
+	r := newWSRigWith(t, Options{PanelTimeout: time.Second}, func(h *Hub) {
+		h.commandTTL = 50 * time.Millisecond
+	})
+	conn := r.connect(t)
+	id, err := r.hub.SendCommand(r.inst.ID, "snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frame map[string]any
+	if err := conn.ReadJSON(&frame); err != nil {
+		t.Fatal(err)
+	}
+	if frame["type"] != "command" || frame["id"] != id || frame["command"] != "snapshot" {
+		t.Fatalf("command frame=%v", frame)
+	}
+	waitCondition(t, "expired command", func() bool {
+		c := r.store.Command(id)
+		return c != nil && c.State == "expired"
+	})
+}
+
+func TestCommandDisconnectMarksUnknown(t *testing.T) {
+	r := newWSRig(t, Options{})
+	conn := r.connect(t)
+	id, err := r.hub.SendCommand(r.inst.ID, "pause")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frame map[string]any
+	if err := conn.ReadJSON(&frame); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	waitCondition(t, "unknown command", func() bool {
+		c := r.store.Command(id)
+		return c != nil && c.State == "unknown"
+	})
+}
+
+func TestPanelRejectsMissingCapability(t *testing.T) {
+	r := newWSRig(t, Options{})
+	code, _, err := r.store.CreateCode("u3", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, plainCred, err := r.store.RedeemCode(code, "Plain", "0.1.2", "", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.connectCred(t, plainCred)
+	if _, err := r.hub.PanelRequest(context.Background(), plain.ID, map[string]any{"op": "page"}); !errors.Is(err, ErrNoPanel) {
+		t.Fatalf("expected ErrNoPanel, got %v", err)
+	}
+}
+
+func TestPanelRejectsNinthInFlight(t *testing.T) {
+	r := newWSRig(t, Options{PanelTimeout: 30 * time.Second})
+	conn := r.connect(t)
+	go func() {
+		for {
+			var f map[string]any
+			if conn.ReadJSON(&f) != nil {
+				return
+			}
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	results := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			_, err := r.hub.PanelRequest(ctx, r.inst.ID, map[string]any{"op": "state"})
+			results <- err
+		}()
+	}
+	r.hub.mu.Lock()
+	c := r.hub.clients[r.inst.ID]
+	r.hub.mu.Unlock()
+	waitCondition(t, "eight in flight", func() bool {
+		c.panelMu.Lock()
+		defer c.panelMu.Unlock()
+		return len(c.pending) == 8
+	})
+	if _, err := r.hub.PanelRequest(context.Background(), r.inst.ID, map[string]any{"op": "state"}); !errors.Is(err, ErrBusy) {
+		t.Fatalf("expected ErrBusy, got %v", err)
+	}
+	cancel()
+	for i := 0; i < 8; i++ {
+		select {
+		case err := <-results:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancelled request err=%v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("pending request did not return after cancel")
+		}
+	}
+	waitCondition(t, "pending cleared", func() bool {
+		c.panelMu.Lock()
+		defer c.panelMu.Unlock()
+		return len(c.pending) == 0
+	})
+}
+
+func TestPanelDecodesBase64(t *testing.T) {
+	r := newWSRig(t, Options{PanelTimeout: time.Second})
+	conn := r.connect(t)
+	go func() {
+		var f map[string]any
+		if conn.ReadJSON(&f) != nil {
+			return
+		}
+		id, _ := f["id"].(string)
+		conn.WriteJSON(map[string]any{"type": "panel_result", "id": id, "status": 200,
+			"contentType": "image/png", "encoding": "base64",
+			"body": base64.StdEncoding.EncodeToString([]byte("PNGDATA"))})
+	}()
+	res, err := r.hub.PanelRequest(context.Background(), r.inst.ID, map[string]any{"op": "png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(res.Body) != "PNGDATA" || res.Encoding != "base64" || res.ContentType != "image/png" {
+		t.Fatalf("result=%+v body=%q", res, res.Body)
+	}
+}
+
+func TestPanelDisconnectFailsPending(t *testing.T) {
+	r := newWSRig(t, Options{PanelTimeout: 10 * time.Second})
+	conn := r.connect(t)
+	go func() { var f map[string]any; _ = conn.ReadJSON(&f) }()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := r.hub.PanelRequest(context.Background(), r.inst.ID, map[string]any{"op": "state"})
+		errCh <- err
+	}()
+	r.hub.mu.Lock()
+	c := r.hub.clients[r.inst.ID]
+	r.hub.mu.Unlock()
+	waitCondition(t, "request pending", func() bool {
+		c.panelMu.Lock()
+		defer c.panelMu.Unlock()
+		return len(c.pending) == 1
+	})
+	_ = conn.Close()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrOffline) {
+			t.Fatalf("expected ErrOffline, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending request was not failed on disconnect")
+	}
+}
+
+func TestPanelSocketReplacementFailsPending(t *testing.T) {
+	r := newWSRig(t, Options{PanelTimeout: 10 * time.Second})
+	first := r.connect(t)
+	go func() { var f map[string]any; _ = first.ReadJSON(&f) }()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := r.hub.PanelRequest(context.Background(), r.inst.ID, map[string]any{"op": "state"})
+		errCh <- err
+	}()
+	r.hub.mu.Lock()
+	c := r.hub.clients[r.inst.ID]
+	r.hub.mu.Unlock()
+	waitCondition(t, "request pending", func() bool {
+		c.panelMu.Lock()
+		defer c.panelMu.Unlock()
+		return len(c.pending) == 1
+	})
+	_ = r.connect(t)
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrOffline) {
+			t.Fatalf("expected ErrOffline, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending request survived socket replacement")
+	}
+}
+
+func TestPanelDuplicateResultIgnored(t *testing.T) {
+	r := newWSRig(t, Options{})
+	_ = r.connect(t)
+	r.hub.mu.Lock()
+	c := r.hub.clients[r.inst.ID]
+	r.hub.mu.Unlock()
+	ch := make(chan *PanelResult, 1)
+	if err := c.registerPending("pr_dup", ch, 8); err != nil {
+		t.Fatal(err)
+	}
+	c.resolvePanel("pr_dup", &PanelResult{Status: 200, Body: []byte("first")})
+	c.resolvePanel("pr_dup", &PanelResult{Status: 500, Body: []byte("second")})
+	res := <-ch
+	if res.Status != 200 || string(res.Body) != "first" {
+		t.Fatalf("first answer lost: %+v", res)
+	}
+	select {
+	case extra := <-ch:
+		t.Fatalf("duplicate answer delivered: %+v", extra)
+	default:
+	}
+	c.panelMu.Lock()
+	n := len(c.pending)
+	c.panelMu.Unlock()
+	if n != 0 {
+		t.Fatalf("pending not cleaned: %d", n)
+	}
+}
+
+func TestPanelCrossInstallationResultIgnored(t *testing.T) {
+	r := newWSRig(t, Options{PanelTimeout: 150 * time.Millisecond})
+	connA := r.connect(t)
+	_, otherCred := pairInstallation(t, r.store, "u2", "Other")
+	connB := r.connectCred(t, otherCred)
+
+	idCh := make(chan string, 1)
+	go func() {
+		var f map[string]any
+		if connA.ReadJSON(&f) == nil {
+			id, _ := f["id"].(string)
+			idCh <- id
+		}
+	}()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := r.hub.PanelRequest(context.Background(), r.inst.ID, map[string]any{"op": "state"})
+		errCh <- err
+	}()
+	var id string
+	select {
+	case id = <-idCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("panel request was not written")
+	}
+	// The other installation answers with the stolen id; it must not resolve
+	// the first installation's pending call.
+	if err := connB.WriteJSON(map[string]any{"type": "panel_result", "id": id,
+		"status": 200, "body": "foreign"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errCh; !errors.Is(err, ErrTimeout) {
+		t.Fatalf("cross-installation result resolved the call: %v", err)
+	}
+}
+
+func TestCloseInstallationFlushesPendingTelemetry(t *testing.T) {
+	r := newWSRigWith(t, Options{TelemetryMinInterval: time.Hour}, func(h *Hub) {
+		h.flushEvery = time.Hour
+	})
+	conn := r.connect(t)
+	send := func(account string) {
+		t.Helper()
+		if err := conn.WriteJSON(map[string]any{"type": "telemetry", "state": "SCANNING",
+			"account": account}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("First")
+	waitCondition(t, "first frame stored", func() bool {
+		got, ok := r.store.Installation(r.inst.ID)
+		return ok && got.Telemetry != nil && got.Telemetry.Account == "First"
+	})
+	send("Second")
+	roundTrip(t, conn)
+	r.hub.CloseInstallation(r.inst.ID, 4403, "revoked")
+	got, _ := r.store.Installation(r.inst.ID)
+	if got.Telemetry == nil || got.Telemetry.Account != "Second" {
+		t.Fatalf("pending telemetry lost on close: %+v", got.Telemetry)
+	}
+}
+
+func TestSocketReplacementFlushesPendingTelemetry(t *testing.T) {
+	r := newWSRigWith(t, Options{TelemetryMinInterval: time.Hour}, func(h *Hub) {
+		h.flushEvery = time.Hour
+	})
+	first := r.connect(t)
+	if err := first.WriteJSON(map[string]any{"type": "telemetry", "state": "SCANNING",
+		"account": "First"}); err != nil {
+		t.Fatal(err)
+	}
+	waitCondition(t, "first frame stored", func() bool {
+		got, ok := r.store.Installation(r.inst.ID)
+		return ok && got.Telemetry != nil && got.Telemetry.Account == "First"
+	})
+	if err := first.WriteJSON(map[string]any{"type": "telemetry", "state": "SCANNING",
+		"account": "Second"}); err != nil {
+		t.Fatal(err)
+	}
+	roundTrip(t, first)
+	_ = r.connect(t)
+	waitCondition(t, "pending frame flushed on replacement", func() bool {
+		got, ok := r.store.Installation(r.inst.ID)
+		return ok && got.Telemetry != nil && got.Telemetry.Account == "Second"
+	})
 }
