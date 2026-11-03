@@ -1,0 +1,19 @@
+services:
+  gonuts-panel:
+    build: .
+    image: gonuts-panel:local
+    container_name: gonuts-panel
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    user: "1000:1000"
+    # Run `chown -R 1000:1000 ./data` once on the NAS, or use a named volume.
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 256m
+    security_opt:
+      - no-new-privileges:true

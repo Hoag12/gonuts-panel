@@ -2,6 +2,7 @@
 upstream/
 go-releases.json
 data/
+panel/data/
 panel/bin/
 *.exe
 *.test
