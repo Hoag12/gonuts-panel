@@ -62,3 +62,16 @@ func TestRewriteReplacesHostedTrackerURL(t *testing.T) {
 		t.Fatalf("tracker url not made relative:\n%s", out)
 	}
 }
+
+func TestRewriteRemovesRetiredNoticeAndDefaultsToOwnAccount(t *testing.T) {
+	in := `<body><section class="panel" role="note"><strong>PUBLIC SUPPORT HAS ENDED</strong>` +
+		`<p>After seven weeks, GoNuts is no longer publicly maintained or supported.</p></section>` +
+		`<select id="mobile-account"></select></body>`
+	out := Rewrite(in, "tok")
+	if strings.Contains(out, "PUBLIC SUPPORT HAS ENDED") || strings.Contains(out, "After seven weeks") {
+		t.Fatalf("retired notice survived:\n%s", out)
+	}
+	if !strings.Contains(out, `\(this client\)`) || !strings.Contains(out, `mobile-account`) {
+		t.Fatalf("split-panel account default not injected:\n%s", out)
+	}
+}

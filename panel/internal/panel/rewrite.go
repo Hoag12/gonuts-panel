@@ -5,6 +5,7 @@ package panel
 
 import (
 	"html"
+	"regexp"
 	"strings"
 )
 
@@ -39,14 +40,46 @@ const csrfWrapper = `<script>(function(){` +
 	`return f(u,o);};` +
 	`})();</script>`
 
+// retiredNotice matches the mod's "public support has ended" section. The
+// self-hosted panel keeps working, so that notice is not true here.
+var retiredNotice = regexp.MustCompile(`(?s)<section[^>]*role="note"[^>]*>.*?</section>`)
+
+// autoAccountScript selects the "(this client)" account in the panel's hidden
+// account picker. In a split/multi-client setup each instance owns one account,
+// and older mod builds otherwise open on "all accounts · hive of 2". New mod
+// builds remove the picker entirely; this is a no-op there.
+const autoAccountScript = `<script>(function(){` +
+	`function pick(){var s=document.getElementById('mobile-account');if(!s||!s.options)return;` +
+	`for(var i=0;i<s.options.length;i++){var o=s.options[i];` +
+	`if(/\(this client\)/i.test(o.textContent)&&s.value!==o.value){s.value=o.value;` +
+	`s.dispatchEvent(new Event('change'));return;}}}` +
+	`setInterval(pick,1200);})();</script>`
+
+// imageFallbackScript keeps the summary visible when the panel preview transfer
+// stalls. The panel page's preview path can leave its image pending on a busy
+// bot; /panel.png (and the relay's SVG fallback) still answers.
+const imageFallbackScript = `<script>(function(){` +
+	`function image(){var s=document.getElementById('shot');if(!s||!s.hidden)return;` +
+	`var i=new Image();i.onload=function(){s.src=i.src;s.hidden=false;` +
+	`var t=document.getElementById('image-status');if(t)t.textContent='Summary loaded from the live panel.';};` +
+	`i.src='panel.png?t='+Date.now();}` +
+	`setInterval(image,8000);})();</script>`
+
 // Rewrite makes the panel page relative to its hosted URL, redirects its Lock
-// form to the dashboard, and injects the per-session CSRF token.
+// form to the dashboard, removes the retired notice, and injects the
+// per-session CSRF token plus the split-panel account default.
 //
 // The same rewritten page is safe to share between sessions because the token
 // is only ever injected here, per request; callers cache the raw page.
 func Rewrite(page, csrf string) string {
 	page = rewriteReplacer.Replace(page)
-	inject := `<meta name="gonuts-csrf" content="` + html.EscapeString(csrf) + `">` + csrfWrapper
+	page = retiredNotice.ReplaceAllStringFunc(page, func(block string) string {
+		if strings.Contains(block, "PUBLIC SUPPORT HAS ENDED") {
+			return ""
+		}
+		return block
+	})
+	inject := `<meta name="gonuts-csrf" content="` + html.EscapeString(csrf) + `">` + csrfWrapper + autoAccountScript + imageFallbackScript
 	if i := indexFoldASCII(page, "<head>"); i >= 0 {
 		page = page[:i+len("<head>")] + inject + page[i+len("<head>"):]
 	} else {

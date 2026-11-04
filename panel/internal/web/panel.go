@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -281,7 +282,7 @@ func (s *Server) panelGet(w http.ResponseWriter, r *http.Request) {
 	case path == "state":
 		s.panelData(w, r, inst.ID, map[string]any{"op": "state"})
 	case path == "panel.png":
-		s.panelImage(w, r, inst.ID)
+		s.panelImage(w, r, inst)
 	case strings.HasPrefix(path, "api/"):
 		name := strings.TrimPrefix(path, "api/")
 		if !panelNamePattern.MatchString(name) {
@@ -390,8 +391,95 @@ func (s *Server) panelAsset(w http.ResponseWriter, r *http.Request, id int64, pa
 // defeat the browser cache, but the server cache key is path-only; caching the
 // image there froze the image and summary view for the whole TTL. The image
 // therefore bypasses the asset cache: every request relays a fresh "png" op.
-func (s *Server) panelImage(w http.ResponseWriter, r *http.Request, id int64) {
-	s.panelBinary(w, r, id, map[string]any{"op": "png"}, nil)
+// A slow/busy game used to leave the image area loading for 15 s and then show
+// an error; a relay-generated summary from the last telemetry is used instead.
+func (s *Server) panelImage(w http.ResponseWriter, r *http.Request, inst *store.Installation) {
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	res, err := s.Hub.PanelRequest(ctx, inst.ID, map[string]any{"op": "png"})
+	if err == nil && res != nil && res.Status == http.StatusOK {
+		contentType := safePanelContentType(res.ContentType)
+		if strings.HasPrefix(contentType, "image/") {
+			writePanelBody(w, res.Body, contentType, "no-store")
+			return
+		}
+	}
+	s.writeSummaryImage(w, inst)
+}
+
+// writeSummaryImage is the fallback when the game cannot produce its full
+// panel screenshot in time. It uses only the telemetry the relay already has.
+func (s *Server) writeSummaryImage(w http.ResponseWriter, inst *store.Installation) {
+	t := inst.Telemetry
+	lines := []string{"GoNuts · " + inst.Name, "The game did not answer the live image request.", ""}
+	if t == nil {
+		lines = append(lines, "No telemetry received yet.")
+	} else {
+		lines = append(lines,
+			"Account: "+valueOr(t.Account, "unknown"),
+			"State: "+valueOr(t.State, "UNKNOWN"),
+			"Bank: "+svgMoney(t.Bank),
+			"Profit 1h / 24h: "+svgInterval(t.Profit, true)+" / "+svgInterval(t.Profit, false),
+			"Sales 1h / 24h: "+svgInterval(t.Sales, true)+" / "+svgInterval(t.Sales, false),
+			"Listed / slots: "+svgCount(&t.Listed)+" / "+svgCount(&t.Slots),
+			"Trades: "+svgCount(&t.Trades),
+			"Last: "+valueOr(t.LastAction, "waiting for activity"),
+		)
+	}
+	var b strings.Builder
+	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" width="720" height="300" viewBox="0 0 720 300">`)
+	b.WriteString(`<rect width="720" height="300" fill="#0c121b"/>`)
+	b.WriteString(`<rect x="16" y="16" width="688" height="268" rx="7" fill="#182230" stroke="#2c3b4c"/>`)
+	b.WriteString(`<text x="34" y="48" fill="#f4cd7a" font-family="monospace" font-size="18">`)
+	b.WriteString(html.EscapeString(lines[0]))
+	b.WriteString(`</text>`)
+	b.WriteString(`<text x="34" y="70" fill="#8799aa" font-family="monospace" font-size="12">`)
+	b.WriteString(html.EscapeString(lines[1]))
+	b.WriteString(`</text>`)
+	y := 100
+	for _, line := range lines[3:] {
+		b.WriteString(fmt.Sprintf(`<text x="34" y="%d" fill="#f0eee7" font-family="monospace" font-size="15">%s</text>`, y, html.EscapeString(line)))
+		y += 24
+	}
+	b.WriteString(`</svg>`)
+	w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(b.String()))
+}
+
+func valueOr(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func svgCount(v *int64) string {
+	if v == nil {
+		return "—"
+	}
+	return strconv.FormatInt(*v, 10)
+}
+
+func svgMoney(v *int64) string {
+	if v == nil {
+		return "—"
+	}
+	return "$" + strconv.FormatInt(*v, 10)
+}
+
+func svgInterval(v *store.Interval, first bool) string {
+	if v == nil {
+		return "—"
+	}
+	p := v.H24
+	if first {
+		p = v.H1
+	}
+	if p == nil {
+		return "—"
+	}
+	return "$" + strconv.FormatInt(*p, 10)
 }
 
 // panelBinary relays one binary panel response and hands a successful body to
