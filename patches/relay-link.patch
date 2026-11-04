@@ -1,3 +1,7 @@
+diff --git a/release/doughbay-0.1.0+26.2.jar b/release/doughbay-0.1.0+26.2.jar
+deleted file mode 100644
+index c370f25..0000000
+Binary files a/release/doughbay-0.1.0+26.2.jar and /dev/null differ
 diff --git a/trader-fabric/src/main/java/dev/doughbay/fabric/DashboardScreen.java b/trader-fabric/src/main/java/dev/doughbay/fabric/DashboardScreen.java
 index d2166a6..d96e789 100644
 --- a/trader-fabric/src/main/java/dev/doughbay/fabric/DashboardScreen.java
@@ -46,6 +50,50 @@ index f746d36..1891009 100644
              message = "No browser? Copy this address.";
          } catch (RuntimeException unavailable) {
              message = "Browser unavailable. Copy this address.";
+diff --git a/trader-fabric/src/main/java/dev/doughbay/fabric/discord/DiscordBridge.java b/trader-fabric/src/main/java/dev/doughbay/fabric/discord/DiscordBridge.java
+index 228b06f..ea6f7b4 100644
+--- a/trader-fabric/src/main/java/dev/doughbay/fabric/discord/DiscordBridge.java
++++ b/trader-fabric/src/main/java/dev/doughbay/fabric/discord/DiscordBridge.java
+@@ -216,6 +216,10 @@ public final class DiscordBridge {
+ 
+     /** What is under the picture: the page's name, the last reply, and the controls in the shape Discord takes them. */
+     public synchronized String panelState() {
++        // In a split/multi-client setup each Minecraft instance owns one
++        // account. Its panel must show that account, not the whole hive; the
++        // dashboard's Hive view remains the combined view.
++        if (singleAccountPanel()) account = DoughBayClient.account();
+         ObjectNode root = MAPPER.createObjectNode();
+         root.put("page", label(page));
+         root.put("notice", notice.isBlank() || System.currentTimeMillis() - noticeAt > 120_000 ? "" : notice);
+@@ -226,6 +230,9 @@ public final class DiscordBridge {
+             if(frame!=null){root.put("reportAt",frame.at());if(frame.report()!=null)root.set("report",frame.report().deepCopy());}
+         }
+         var current = PanelReadModel.currentMembers(DoughBayClient.hiveAccounts(), DoughBayClient.account());
++        if (singleAccountPanel()) {
++            current = current.stream().filter(name -> name.equalsIgnoreCase(DoughBayClient.account())).toList();
++        }
+         root.set("activity", PanelReadModel.activity(ledgerPath, current, account, System.currentTimeMillis()));
+         // What the HUD in game shows across its top, for the page to show across its own.
+         AutomationSessionController.SessionSnapshot s = session.snapshot();
+@@ -1811,8 +1818,17 @@ public final class DiscordBridge {
+     }
+ 
+     private List<String> panelAccounts() {
+-        return dev.doughbay.fabric.OrderMetrics.members(ledgerPath, DoughBayClient.hiveAccounts(), DoughBayClient.account(),
++        List<String> all = dev.doughbay.fabric.OrderMetrics.members(ledgerPath, DoughBayClient.hiveAccounts(), DoughBayClient.account(),
+                 dev.doughbay.fabric.HiveSetup.active() || Tuning.get("multi.enabled") >= .5);
++        // Split mode: one instance runs one account, so its panel only offers
++        // that account. The dashboard Hive view is the combined view.
++        return singleAccountPanel() ? List.of(DoughBayClient.account()) : all;
++    }
++
++    /** One account per panel when multi-client/split mode is active. */
++    private boolean singleAccountPanel() {
++        String own = DoughBayClient.account();
++        return DoughBayClient.multiClient() && own != null && !own.isBlank();
+     }
+ 
+     private List<dev.doughbay.fabric.OrderMetrics.Account> orderAccounts() {
 diff --git a/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/DashboardProtocol.java b/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/DashboardProtocol.java
 index c4c0e80..dd085a6 100644
 --- a/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/DashboardProtocol.java
