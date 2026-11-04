@@ -181,7 +181,7 @@ func (s *Server) panelMutation(w http.ResponseWriter, r *http.Request) (*store.S
 		return nil, false
 	}
 	if !auth.Equal(r.Header.Get(auth.CSRFHeader), sess.CSRF) ||
-		!auth.OriginAllowed(r, s.Cfg.PublicBaseURL) {
+		!s.originAllowed(r) {
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"message": "invalid request origin or token",
 			"status":  http.StatusForbidden,

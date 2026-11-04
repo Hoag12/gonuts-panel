@@ -219,3 +219,27 @@ func TestLoadDevLoginStillRequiresLoopback(t *testing.T) {
 		t.Fatal("dev login on a LAN origin was accepted")
 	}
 }
+
+func TestParseExtraOrigins(t *testing.T) {
+	got, err := parseExtraOrigins(" http://100.95.121.78:8080 , https://panel.example ")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"http://100.95.121.78:8080", "https://panel.example"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+	if empty, err := parseExtraOrigins(""); err != nil || empty != nil {
+		t.Fatalf("empty list: got %v, %v", empty, err)
+	}
+	for _, bad := range []string{"100.0.0.1:8080", "ftp://x", "http://x/path"} {
+		if _, err := parseExtraOrigins(bad); err == nil {
+			t.Fatalf("expected %q to be rejected", bad)
+		}
+	}
+}

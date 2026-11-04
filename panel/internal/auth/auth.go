@@ -131,6 +131,20 @@ func ClearOAuthCookie(w http.ResponseWriter, secure bool) {
 	})
 }
 
+// OriginAllowedAny reports whether the request's Origin matches any of the
+// configured origins. The first entry is the public base URL; the rest are
+// alternate origins the operator reaches the panel through (a tailnet address,
+// a second interface), so a mutation is not refused just because the browser
+// used a different but equally trusted host.
+func OriginAllowedAny(r *http.Request, bases []string) bool {
+	for _, base := range bases {
+		if base != "" && OriginAllowed(r, base) {
+			return true
+		}
+	}
+	return false
+}
+
 // OriginAllowed reports whether the request's Origin (or, when absent, its
 // Referer) matches the scheme and host of base. Requests without either header
 // are rejected: mutating requests must come from the panel's own origin.

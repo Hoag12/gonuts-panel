@@ -278,3 +278,17 @@ func TestDiscordEmptyResponses(t *testing.T) {
 		t.Fatal("missing user id accepted")
 	}
 }
+
+func TestOriginAllowedAny(t *testing.T) {
+	r, _ := http.NewRequest("POST", "http://192.168.2.8:8080/dashboard/api/x", nil)
+	r.Header.Set("Origin", "http://100.95.121.78:8080")
+	if OriginAllowed(r, "http://192.168.2.8:8080") {
+		t.Fatal("plain base URL should not match a different origin")
+	}
+	if !OriginAllowedAny(r, []string{"http://192.168.2.8:8080", "http://100.95.121.78:8080"}) {
+		t.Fatal("allowlisted tailnet origin should match")
+	}
+	if OriginAllowedAny(r, []string{"http://192.168.2.8:8080", ""}) {
+		t.Fatal("empty entries must not match")
+	}
+}

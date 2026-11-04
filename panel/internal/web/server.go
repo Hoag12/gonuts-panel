@@ -92,6 +92,16 @@ func New(cfg config.Config, st *store.Store, hub Relay, d *auth.Discord) *Server
 }
 
 // Handler returns the complete route table wrapped in the security middleware.
+// originAllowed accepts the configured public base URL plus any extra origins
+// the operator browses the dashboard from, so reaching the panel over a tailnet
+// address does not turn every mutation into a rejected CSRF check.
+func (s *Server) originAllowed(r *http.Request) bool {
+	if auth.OriginAllowed(r, s.Cfg.PublicBaseURL) {
+		return true
+	}
+	return auth.OriginAllowedAny(r, s.Cfg.ExtraOrigins)
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", pageRedirect("/dashboard"))
@@ -176,7 +186,7 @@ func (s *Server) requireMutation(w http.ResponseWriter, r *http.Request) (*store
 		return nil, nil, false
 	}
 	if !auth.Equal(r.Header.Get(auth.CSRFHeader), sess.CSRF) ||
-		!auth.OriginAllowed(r, s.Cfg.PublicBaseURL) {
+		!s.originAllowed(r) {
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"message": "invalid request origin or token",
 			"status":  http.StatusForbidden,

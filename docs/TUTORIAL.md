@@ -51,6 +51,7 @@ DSM 7.1.1 has no `systemctl enable --now`; run `enable` and `start` separately.
 | `GONUTS_ALLOW_UNAUTH_LAN=1` | allow the above from the LAN |
 | `GONUTS_COOKIE_SECURE` | `0` for plain `http://`, `1` behind HTTPS |
 | `GONUTS_TRUST_PROXY` | `1` when a reverse proxy terminates TLS |
+| `GONUTS_EXTRA_ORIGINS` | comma-separated extra origins that may send mutations, e.g. `http://100.95.121.78:8080` — without it the dashboard works over that address but every action returns 403 and the page reloads |
 | `GONUTS_LOCAL_PASSWORD_HASH` | PBKDF2 hash; generate with `gonuts-panel -hash-password 'your-pin'` |
 | `GONUTS_DEV_LOGIN=1` | loopback development sign-in |
 | `GONUTS_DISCORD_CLIENT_ID` / `_SECRET` | Discord OAuth instead of a local password; redirect must be `${GONUTS_PUBLIC_BASE_URL}/auth/callback` |

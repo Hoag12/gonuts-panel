@@ -192,7 +192,7 @@ func (s *Server) authLocal(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if !auth.OriginAllowed(r, s.Cfg.PublicBaseURL) {
+	if !s.originAllowed(r) {
 		http.Error(w, "invalid request origin", http.StatusForbidden)
 		return
 	}
@@ -295,7 +295,7 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 	if token == "" {
 		token = r.PostForm.Get("csrf")
 	}
-	if !auth.Equal(token, sess.CSRF) || !auth.OriginAllowed(r, s.Cfg.PublicBaseURL) {
+	if !auth.Equal(token, sess.CSRF) || !s.originAllowed(r) {
 		http.Error(w, "invalid request origin or token", http.StatusForbidden)
 		return
 	}

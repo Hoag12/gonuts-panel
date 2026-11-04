@@ -15,8 +15,11 @@ import (
 const minLocalPasswordLength = 4
 
 type Config struct {
-	Addr                string
-	PublicBaseURL       string
+	Addr          string
+	PublicBaseURL string
+	// ExtraOrigins are additional origins (for example a tailnet address) that
+	// mutations may come from; PublicBaseURL is always accepted as well.
+	ExtraOrigins        []string
 	DataDir             string
 	DiscordClientID     string
 	DiscordClientSecret string
@@ -80,6 +83,11 @@ func Load() (Config, error) {
 		AuthDisabled:   boolEnv("GONUTS_AUTH_DISABLED", false),
 		AllowUnauthLAN: boolEnv("GONUTS_ALLOW_UNAUTH_LAN", false),
 	}
+	extraOrigins, err := parseExtraOrigins(os.Getenv("GONUTS_EXTRA_ORIGINS"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ExtraOrigins = extraOrigins
 	cfg.DiscordEnabled = cfg.DiscordClientID != "" && cfg.DiscordClientSecret != ""
 	for _, id := range strings.Split(os.Getenv("GONUTS_ALLOWED_DISCORD_IDS"), ",") {
 		if id = strings.TrimSpace(id); id != "" {
@@ -169,4 +177,29 @@ func boolEnv(key string, fallback bool) bool {
 		return fallback
 	}
 	return b
+}
+
+// parseExtraOrigins accepts a comma separated list of additional origins the
+// dashboard may be reached on (for example a tailnet address). Each entry must
+// be a bare http(s) origin so the CSRF comparison stays exact.
+func parseExtraOrigins(raw string) ([]string, error) {
+	var out []string
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		u, err := url.Parse(item)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return nil, fmt.Errorf("GONUTS_EXTRA_ORIGINS entry %q must be an absolute http(s) origin", item)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return nil, fmt.Errorf("GONUTS_EXTRA_ORIGINS entry %q must use http or https", item)
+		}
+		if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+			return nil, fmt.Errorf("GONUTS_EXTRA_ORIGINS entry %q must be an origin without a path", item)
+		}
+		out = append(out, u.Scheme+"://"+u.Host)
+	}
+	return out, nil
 }
