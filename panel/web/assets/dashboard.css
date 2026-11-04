@@ -77,6 +77,9 @@ main { max-width:1180px; margin:0 auto; padding:6px 20px 40px; }
 .hive-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .hive-controls .btn { flex:0 0 auto; }
 .hive-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+.split-stats { margin-top:18px; }
+.top .seg { flex:0 0 auto; }
+@media (max-width:600px) { .top .seg { order:3; } }
 .stat { background:var(--inset); border:1px solid var(--edge); border-radius:5px; padding:9px 11px; min-width:0; }
 .stat .label { display:block; color:var(--muted); font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
 .stat b { display:block; margin-top:4px; font-size:18px; font-weight:400; color:var(--text);

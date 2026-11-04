@@ -129,8 +129,25 @@ function total(items, pick) {
 }
 function stat(label, value, note, cls) {
   const d = el('div', 'stat' + (cls ? ' ' + cls : ''));
-  d.append(el('span', 'label', label), el('b', '', value == null ? '—' : String(value)), el('small', '', note || ''));
+  d.append(el('span', 'label', label), el('b', '', value == null ? 'â€”' : String(value)), el('small', '', note || ''));
   return d;
+}
+function statElements(items) {
+  const t = items.map(i => i.telemetry || {});
+  const profit1 = total(t, x => x.profit?.h1), profit24 = total(t, x => x.profit?.h24);
+  const revenue1 = total(t, x => x.revenue?.h1), revenue24 = total(t, x => x.revenue?.h24);
+  const sales1 = total(t, x => x.sales?.h1), sales24 = total(t, x => x.sales?.h24);
+  const margin = profit24 != null && revenue24 != null && revenue24 > 0 ? (profit24 / revenue24 * 100).toFixed(1) + '%' : null;
+  return [
+    stat('Bank now', money(total(t, x => x.bank)), 'a balance, not profit', 'gold'),
+    stat('Profit last 24h', money(profit24), 'booked by your hive', 'good'),
+    stat('Sales records last 24h', compact(sales24), 'booked sales, not unique trades'),
+    stat('Profit last hour', money(profit1), 'booked', 'good'),
+    stat('Sales records last hour', compact(sales1), 'booked'),
+    stat('Profit margin 24h', margin, 'profit / sales revenue'),
+    stat('Sales revenue last 24h', money(revenue24), 'gross booked sales'),
+    stat('Sales revenue last hour', money(revenue1), 'gross booked sales')
+  ];
 }
 function selectedInstallations(data) {
   const all = data.installations || [];
@@ -138,8 +155,9 @@ function selectedInstallations(data) {
 }
 function renderHive(data) {
   const all = data.installations || [];
-  if (!all.length) { $('hiveOverview').hidden = true; return; }
-  $('hiveOverview').hidden = false;
+  if (!all.length) { $('hiveOverview').hidden = true; $('splitStats').hidden = true; return; }
+  $('hiveOverview').hidden = viewMode !== 'hive';
+  $('splitStats').hidden = viewMode !== 'split';
   if (scope !== 'all' && !all.some(i => String(i.id) === String(scope))) scope = 'all';
   const selected = selectedInstallations(data);
   const online = selected.filter(i => i.online);
@@ -153,31 +171,18 @@ function renderHive(data) {
   }
   sel.value = scope;
   $('hiveName').textContent = scope === 'all'
-    ? all.length + ' account' + (all.length === 1 ? '' : 's') + ' · ' + all.filter(i => i.online).length + ' online'
-    : (selected[0] ? selected[0].name : '—');
+    ? all.length + ' account' + (all.length === 1 ? '' : 's') + ' Â· ' + all.filter(i => i.online).length + ' online'
+    : (selected[0] ? selected[0].name : 'â€”');
   $('hiveScopeNote').textContent = scope === 'all' ? 'Controlling all accounts' : 'Controlling ' + (selected[0]?.name || 'account');
   const listed = total(selected, i => i.telemetry?.listed);
   const slots = total(selected, i => i.telemetry?.slots);
-  $('hiveSlots').textContent = listed == null && slots == null ? '—' : (listed == null ? '—' : listed) + ' / ' + (slots == null ? '—' : slots);
+  $('hiveSlots').textContent = listed == null && slots == null ? 'â€”' : (listed == null ? 'â€”' : listed) + ' / ' + (slots == null ? 'â€”' : slots);
   $('hiveBank').textContent = money(total(selected, i => i.telemetry?.bank));
   $('hiveTrades').textContent = compact(total(selected, i => i.telemetry?.trades));
   $('hiveOnline').textContent = online.length + ' / ' + selected.length;
-  const t = selected.map(i => i.telemetry || {});
-  const profit1 = total(t, x => x.profit?.h1), profit24 = total(t, x => x.profit?.h24);
-  const revenue1 = total(t, x => x.revenue?.h1), revenue24 = total(t, x => x.revenue?.h24);
-  const sales1 = total(t, x => x.sales?.h1), sales24 = total(t, x => x.sales?.h24);
-  const margin = profit24 != null && revenue24 != null && revenue24 > 0 ? (profit24 / revenue24 * 100).toFixed(1) + '%' : null;
-  $('hiveStats').replaceChildren(
-    stat('Bank now', money(total(t, x => x.bank)), 'a balance, not profit', 'gold'),
-    stat('Profit last 24h', money(profit24), 'booked by your hive', 'good'),
-    stat('Sales records last 24h', compact(sales24), 'booked sales, not unique trades'),
-    stat('Profit last hour', money(profit1), 'booked', 'good'),
-    stat('Sales records last hour', compact(sales1), 'booked'),
-    stat('Profit margin 24h', margin, 'profit / sales revenue'),
-    stat('Sales revenue last 24h', money(revenue24), 'gross booked sales'),
-    stat('Sales revenue last hour', money(revenue1), 'gross booked sales')
-  );
-  $('hiveNote').textContent = 'Hive totals · self-reported. Swarm ranking is not part of this self-hosted panel.';
+  $('hiveStats').replaceChildren(...statElements(selected));
+  $('splitStats').replaceChildren(...statElements(all));
+  $('hiveNote').textContent = 'Hive totals Â· self-reported. Swarm ranking is not part of this self-hosted panel.';
   $('hivePause').disabled = !online.length;
   $('hiveResume').disabled = !online.length;
   $('hiveRefresh').disabled = !online.length;
@@ -195,11 +200,10 @@ function render(data) {
   current = data;
   $('who').textContent = data.user.globalName || data.user.username || '';
   const all = data.installations || [];
-  const selected = selectedInstallations(data);
   const cards = $('cards');
   const showCards = viewMode === 'split';
-  cards.hidden = !showCards || !selected.length;
-  cards.replaceChildren(...(showCards ? selected.map(card) : []));
+  cards.hidden = !showCards || !all.length;
+  cards.replaceChildren(...(showCards ? all.map(card) : []));
   $('empty').hidden = all.length > 0;
   renderHive(data);
 }

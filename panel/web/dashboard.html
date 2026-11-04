@@ -12,6 +12,10 @@
 <header class="top">
   <h1>GoNuts <span>dashboard</span></h1>
   <div class="top-right">
+    <div class="seg" id="viewToggle" role="group" aria-label="View mode">
+      <button type="button" data-view="split">Split</button>
+      <button type="button" data-view="hive">Hive</button>
+    </div>
     <button class="btn gold" id="linkClient">Link client</button>
     <span id="who" class="who"></span>
     <form method="post" action="/auth/logout">
@@ -36,10 +40,6 @@
           <span class="label">Control</span>
           <select id="scope" aria-label="Control scope"></select>
         </label>
-        <div class="seg" id="viewToggle" role="group" aria-label="View mode">
-          <button type="button" data-view="split">Split</button>
-          <button type="button" data-view="hive">Hive</button>
-        </div>
         <button class="btn gold" id="openHivePanel">Open hive panel</button>
       </div>
     </div>
@@ -59,6 +59,7 @@
     <p class="hive-note muted" id="hiveNote"></p>
   </section>
   <section id="cards" class="cards" aria-live="polite"></section>
+  <section id="splitStats" class="hive-stats split-stats" aria-label="Hive totals" hidden></section>
 </main>
 <div id="modal" class="modal" hidden>
   <div class="modal-card panel">
