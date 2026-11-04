@@ -8,8 +8,14 @@ async function api(path, opts = {}) {
   if (opts.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   const r = await fetch(path, { ...opts, headers, credentials: 'same-origin' });
   if (r.status === 401) { location.href = '/dashboard'; throw new Error('signed out'); }
+  if (r.status === 403 && !sessionStorage.getItem('gonuts.csrf-reload')) {
+    sessionStorage.setItem('gonuts.csrf-reload', '1');
+    location.reload();
+    throw new Error('refreshing session');
+  }
   let data = null;
   try { data = await r.json(); } catch (e) {}
+  if (r.ok) sessionStorage.removeItem('gonuts.csrf-reload');
   if (!r.ok) throw new Error((data && data.message) || ('HTTP ' + r.status));
   return data;
 }
