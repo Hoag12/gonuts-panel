@@ -39,8 +39,13 @@ type Config struct {
 	LocalUser string
 	// AuthDisabled auto-creates a loopback-only session for the dashboard.
 	// It is refused unless both GONUTS_ADDR and GONUTS_PUBLIC_BASE_URL are
-	// loopback, so a LAN/public panel can never expose unauthenticated controls.
+	// loopback, so a LAN/public panel can never expose unauthenticated controls
+	// by accident. AllowUnauthLAN is the explicit opt-out of that guard.
 	AuthDisabled bool
+	// AllowUnauthLAN permits GONUTS_AUTH_DISABLED with a non-loopback bind.
+	// Off by default: anyone who can reach the panel gets full bot control, so
+	// this must be a deliberate operator choice (GONUTS_ALLOW_UNAUTH_LAN=1).
+	AllowUnauthLAN bool
 }
 
 func Load() (Config, error) {
@@ -70,9 +75,10 @@ func Load() (Config, error) {
 		LocalPasswordHash:   strings.TrimSpace(os.Getenv("GONUTS_LOCAL_PASSWORD_HASH")),
 		// Not trimmed: a password may legitimately end in a space, and the
 		// hash generator uses the exact bytes the operator typed.
-		LocalPassword: os.Getenv("GONUTS_LOCAL_PASSWORD"),
-		LocalUser:     env("GONUTS_LOCAL_USER", "local"),
-		AuthDisabled:  boolEnv("GONUTS_AUTH_DISABLED", false),
+		LocalPassword:  os.Getenv("GONUTS_LOCAL_PASSWORD"),
+		LocalUser:      env("GONUTS_LOCAL_USER", "local"),
+		AuthDisabled:   boolEnv("GONUTS_AUTH_DISABLED", false),
+		AllowUnauthLAN: boolEnv("GONUTS_ALLOW_UNAUTH_LAN", false),
 	}
 	cfg.DiscordEnabled = cfg.DiscordClientID != "" && cfg.DiscordClientSecret != ""
 	for _, id := range strings.Split(os.Getenv("GONUTS_ALLOWED_DISCORD_IDS"), ",") {
@@ -87,12 +93,12 @@ func Load() (Config, error) {
 	if cfg.DevLogin && !IsLoopbackBaseURL(base) {
 		return Config{}, fmt.Errorf("GONUTS_DEV_LOGIN requires a loopback GONUTS_PUBLIC_BASE_URL (localhost, 127.0.0.1, or [::1])")
 	}
-	if cfg.AuthDisabled {
+	if cfg.AuthDisabled && !cfg.AllowUnauthLAN {
 		if !IsLoopbackBaseURL(base) {
-			return Config{}, fmt.Errorf("GONUTS_AUTH_DISABLED requires a loopback GONUTS_PUBLIC_BASE_URL")
+			return Config{}, fmt.Errorf("GONUTS_AUTH_DISABLED requires a loopback GONUTS_PUBLIC_BASE_URL (or set GONUTS_ALLOW_UNAUTH_LAN=1)")
 		}
 		if !IsLoopbackAddr(cfg.Addr) {
-			return Config{}, fmt.Errorf("GONUTS_AUTH_DISABLED requires GONUTS_ADDR to bind loopback, e.g. 127.0.0.1:8080")
+			return Config{}, fmt.Errorf("GONUTS_AUTH_DISABLED requires GONUTS_ADDR to bind loopback, e.g. 127.0.0.1:8080 (or set GONUTS_ALLOW_UNAUTH_LAN=1)")
 		}
 	}
 	// Mirror auth.HashPassword's minimum so the plaintext fallback cannot be a

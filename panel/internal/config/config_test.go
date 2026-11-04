@@ -16,6 +16,7 @@ func clearAuthEnv(t *testing.T) {
 		"GONUTS_LOCAL_PASSWORD",
 		"GONUTS_LOCAL_USER",
 		"GONUTS_AUTH_DISABLED",
+		"GONUTS_ALLOW_UNAUTH_LAN",
 		"GONUTS_ADDR",
 	} {
 		t.Setenv(k, "")
@@ -83,6 +84,22 @@ func TestLoadAuthDisabledIsLoopbackOnly(t *testing.T) {
 	t.Setenv("GONUTS_PUBLIC_BASE_URL", "http://192.168.1.20:8080")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error when auto-login has a LAN base URL")
+	}
+}
+
+func TestLoadAuthDisabledLANOptIn(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("GONUTS_PUBLIC_BASE_URL", "http://192.168.1.20:8080")
+	t.Setenv("GONUTS_ADDR", "0.0.0.0:8080")
+	t.Setenv("GONUTS_AUTH_DISABLED", "1")
+	if _, err := Load(); err == nil {
+		t.Fatal("LAN auto-login was accepted without the explicit opt-in")
+	}
+
+	t.Setenv("GONUTS_ALLOW_UNAUTH_LAN", "1")
+	cfg, err := Load()
+	if err != nil || !cfg.AuthDisabled || !cfg.AllowUnauthLAN {
+		t.Fatalf("LAN auto-login opt-in rejected: cfg=%+v err=%v", cfg, err)
 	}
 }
 

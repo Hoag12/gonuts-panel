@@ -47,8 +47,11 @@ const (
 	defaultCommandTTL = 30 * time.Second
 	// panelExpiry is the deadline advertised to the mod inside a panel frame.
 	// It is intentionally shorter than PanelTimeout so the mod gives up before
-	// the browser is told "no answer".
-	panelExpiry  = 14 * time.Second
+	// the browser is told "no answer". The gap also absorbs clock skew: the mod
+	// refuses a frame whose expiresAt is more than 15 s ahead of its own clock,
+	// so a client running a few seconds slow would otherwise see every panel
+	// request rejected as an invalid expiry.
+	panelExpiry  = 10 * time.Second
 	idBytes      = 12 // 12 bytes of entropy encode to 16 base64url chars
 	commandIDTag = "cmd_"
 	panelIDTag   = "pr_"

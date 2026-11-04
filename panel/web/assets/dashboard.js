@@ -186,11 +186,9 @@ function renderHive(data) {
   $('hivePause').disabled = !online.length;
   $('hiveResume').disabled = !online.length;
   $('hiveRefresh').disabled = !online.length;
-  $('openHivePanel').disabled = !online.length;
   $('hivePause').onclick = () => commandMany(online, 'pause');
   $('hiveResume').onclick = () => commandMany(online, 'resume');
   $('hiveRefresh').onclick = () => commandMany(online, 'snapshot');
-  $('openHivePanel').onclick = () => { if (online[0]) location.href = '/dashboard/panel/' + online[0].id + '/'; };
   document.querySelectorAll('#viewToggle button').forEach(b => {
     b.setAttribute('aria-pressed', b.dataset.view === viewMode ? 'true' : 'false');
     b.onclick = () => { viewMode = b.dataset.view; localStorage.setItem('gonuts.viewMode', viewMode); if (current) render(current); };
