@@ -2715,3 +2715,40 @@ func TestLoginPageSignInModes(t *testing.T) {
 		t.Fatal("Discord-only page renders the local password error")
 	}
 }
+
+func TestAuthDisabledAutoLogin(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := New(config.Config{
+		PublicBaseURL:   "http://127.0.0.1:8080",
+		AuthDisabled:    true,
+		LocalUser:       "local",
+		PanelCacheBytes: 1 << 20,
+	}, st, nil, nil)
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/dashboard", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `gonuts-csrf`) {
+		t.Fatalf("dashboard status=%d body=%s", rec.Code, rec.Body)
+	}
+	var session *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.CookieName {
+			session = c
+		}
+	}
+	if session == nil || session.Value == "" {
+		t.Fatal("auto-login did not set a session cookie")
+	}
+
+	req := httptest.NewRequest("GET", "/dashboard/api/state", nil)
+	req.AddCookie(session)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"id":"local"`) {
+		t.Fatalf("state status=%d body=%s", rec.Code, rec.Body)
+	}
+}

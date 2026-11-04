@@ -268,11 +268,37 @@ func (noopRelay) ServeWS(http.ResponseWriter, *http.Request) {}
 
 // dashboardPage serves the dashboard shell when signed in and the sign-in page
 // otherwise. The dashboard HTML carries the session's CSRF token.
+func (s *Server) autoSession(w http.ResponseWriter) (*store.Session, *store.User) {
+	id := s.Cfg.LocalUser
+	if id == "" {
+		id = "local"
+	}
+	s.Store.UpsertUser(store.User{ID: id, Username: id, GlobalName: id, CreatedAt: time.Now().UnixMilli()})
+	token, _, err := s.Store.CreateSession(id, time.Now())
+	if err != nil {
+		return nil, nil
+	}
+	auth.SetSessionCookie(w, token, s.Cfg.CookieSecure)
+	sess, ok := s.Store.Session(token, time.Now())
+	if !ok {
+		return nil, nil
+	}
+	user, _ := s.Store.User(id)
+	if user == nil {
+		user = &store.User{ID: id, Username: id}
+	}
+	return sess, user
+}
+
 func (s *Server) dashboardPage(w http.ResponseWriter, r *http.Request) {
 	if !s.dashboardLimit(w, r) {
 		return
 	}
 	sess, _, ok := s.session(r)
+	if !ok && s.Cfg.AuthDisabled {
+		sess, _ = s.autoSession(w)
+		ok = sess != nil
+	}
 	if !ok {
 		b, err := s.loginHTML(r.URL.Query().Get("error") == "local")
 		if err != nil {

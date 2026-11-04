@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -36,6 +37,10 @@ type Config struct {
 	LocalPassword string
 	// LocalUser is the account id and display name local sign-in creates.
 	LocalUser string
+	// AuthDisabled auto-creates a loopback-only session for the dashboard.
+	// It is refused unless both GONUTS_ADDR and GONUTS_PUBLIC_BASE_URL are
+	// loopback, so a LAN/public panel can never expose unauthenticated controls.
+	AuthDisabled bool
 }
 
 func Load() (Config, error) {
@@ -67,6 +72,7 @@ func Load() (Config, error) {
 		// hash generator uses the exact bytes the operator typed.
 		LocalPassword: os.Getenv("GONUTS_LOCAL_PASSWORD"),
 		LocalUser:     env("GONUTS_LOCAL_USER", "local"),
+		AuthDisabled:  boolEnv("GONUTS_AUTH_DISABLED", false),
 	}
 	cfg.DiscordEnabled = cfg.DiscordClientID != "" && cfg.DiscordClientSecret != ""
 	for _, id := range strings.Split(os.Getenv("GONUTS_ALLOWED_DISCORD_IDS"), ",") {
@@ -81,6 +87,14 @@ func Load() (Config, error) {
 	if cfg.DevLogin && !IsLoopbackBaseURL(base) {
 		return Config{}, fmt.Errorf("GONUTS_DEV_LOGIN requires a loopback GONUTS_PUBLIC_BASE_URL (localhost, 127.0.0.1, or [::1])")
 	}
+	if cfg.AuthDisabled {
+		if !IsLoopbackBaseURL(base) {
+			return Config{}, fmt.Errorf("GONUTS_AUTH_DISABLED requires a loopback GONUTS_PUBLIC_BASE_URL")
+		}
+		if !IsLoopbackAddr(cfg.Addr) {
+			return Config{}, fmt.Errorf("GONUTS_AUTH_DISABLED requires GONUTS_ADDR to bind loopback, e.g. 127.0.0.1:8080")
+		}
+	}
 	// Mirror auth.HashPassword's minimum so the plaintext fallback cannot be a
 	// password the hash generator would refuse. The raw value is measured, not
 	// a trimmed copy, because the comparison and the generator both use the
@@ -88,8 +102,8 @@ func Load() (Config, error) {
 	if strings.TrimSpace(cfg.LocalPassword) != "" && len(cfg.LocalPassword) < minLocalPasswordLength {
 		return Config{}, fmt.Errorf("GONUTS_LOCAL_PASSWORD must be at least %d characters", minLocalPasswordLength)
 	}
-	if !cfg.DevLogin && !cfg.DiscordEnabled && !cfg.LocalAuthEnabled() {
-		return Config{}, fmt.Errorf("Discord client id/secret or GONUTS_LOCAL_PASSWORD_HASH/GONUTS_LOCAL_PASSWORD are required unless GONUTS_DEV_LOGIN=1")
+	if !cfg.DevLogin && !cfg.DiscordEnabled && !cfg.LocalAuthEnabled() && !cfg.AuthDisabled {
+		return Config{}, fmt.Errorf("Discord client id/secret or GONUTS_LOCAL_PASSWORD_HASH/GONUTS_LOCAL_PASSWORD are required unless GONUTS_DEV_LOGIN=1 or GONUTS_AUTH_DISABLED=1")
 	}
 	return cfg, nil
 }
@@ -111,6 +125,21 @@ func IsLoopbackBaseURL(base string) bool {
 		return false
 	}
 	switch strings.ToLower(u.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
+// IsLoopbackAddr reports whether a listen address binds only a loopback
+// interface. An address with an empty host (":8080") binds every interface and
+// is deliberately refused for unauthenticated mode.
+func IsLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(host) {
 	case "localhost", "127.0.0.1", "::1":
 		return true
 	}

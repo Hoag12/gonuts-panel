@@ -15,6 +15,8 @@ func clearAuthEnv(t *testing.T) {
 		"GONUTS_LOCAL_PASSWORD_HASH",
 		"GONUTS_LOCAL_PASSWORD",
 		"GONUTS_LOCAL_USER",
+		"GONUTS_AUTH_DISABLED",
+		"GONUTS_ADDR",
 	} {
 		t.Setenv(k, "")
 	}
@@ -60,6 +62,27 @@ func TestLoadRejectsBadBaseURL(t *testing.T) {
 	t.Setenv("GONUTS_PUBLIC_BASE_URL", "https://panel.example.com/path")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for path in base URL")
+	}
+}
+
+func TestLoadAuthDisabledIsLoopbackOnly(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("GONUTS_PUBLIC_BASE_URL", "http://127.0.0.1:8080")
+	t.Setenv("GONUTS_ADDR", "127.0.0.1:8080")
+	t.Setenv("GONUTS_AUTH_DISABLED", "1")
+	cfg, err := Load()
+	if err != nil || !cfg.AuthDisabled {
+		t.Fatalf("loopback auto-login rejected: cfg=%+v err=%v", cfg, err)
+	}
+
+	t.Setenv("GONUTS_ADDR", ":8080")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when auto-login binds every interface")
+	}
+	t.Setenv("GONUTS_ADDR", "127.0.0.1:8080")
+	t.Setenv("GONUTS_PUBLIC_BASE_URL", "http://192.168.1.20:8080")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when auto-login has a LAN base URL")
 	}
 }
 

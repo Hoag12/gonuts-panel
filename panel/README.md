@@ -262,6 +262,20 @@ mints a session without Discord, so it is refused unless explicitly set, it is
 rejected unless `GONUTS_PUBLIC_BASE_URL` is loopback (`localhost`, `127.0.0.1`,
 or `[::1]`), and the deployment `.env.example` pins it to `0`.
 
+For a local test with no login page at all, set `GONUTS_AUTH_DISABLED=1`
+**and** bind loopback explicitly:
+
+```bash
+GONUTS_AUTH_DISABLED=1 GONUTS_ADDR=127.0.0.1:8080 \
+GONUTS_PUBLIC_BASE_URL=http://127.0.0.1:8080 \
+GONUTS_DATA_DIR=./data ../.tools/go/bin/go run ./cmd/gonuts-panel
+```
+
+Every `/dashboard` request receives a loopback-only session for
+`GONUTS_LOCAL_USER` (default `local`). The panel refuses to start if either the
+listen address or the public origin is not loopback, so this cannot silently
+expose bot controls to a LAN or the internet.
+
 ## Release packaging
 
 See [panel/deploy/RELEASE-ARTIFACTS.md](deploy/RELEASE-ARTIFACTS.md) for the release asset list. The optional `gonuts-panel.jar`
