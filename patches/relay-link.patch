@@ -167,6 +167,59 @@ index 6c0cdda..1f9a0a0 100644
                          if(epochs.get()!=own){if(ws!=null)ws.abort();return;}
                          if(error!=null){failed("Dashboard socket unavailable; retrying");return;}
                          socket=ws;connecting=false;connectedAt=System.currentTimeMillis();lastPing=connectedAt;lastTelemetry=0;lastShape="";writes=CompletableFuture.completedFuture(null);pendingWrites=0;
+diff --git a/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/RelayLink.java b/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/RelayLink.java
+new file mode 100644
+index 0000000..5986662
+--- /dev/null
++++ b/trader-fabric/src/main/java/dev/doughbay/fabric/hosted/RelayLink.java
+@@ -0,0 +1,47 @@
++package dev.doughbay.fabric.hosted;
++
++import java.net.URI;
++
++/** Self-hosted dashboard origin; unset keeps the retired public dashboard as a harmless fallback. */
++public final class RelayLink {
++    private static final String PROPERTY="gonuts.panel.baseUrl", ENV="GONUTS_PANEL_BASE_URL";
++    private static final String LEGACY="https://gonuts.at";
++    private static volatile String base=load();
++    private RelayLink(){}
++    public static boolean enabled(){return base!=null;}
++    private static String effective(){return base!=null?base:LEGACY;}
++    public static URI page(){return URI.create(effective()+"/dashboard/");}
++    public static URI redeem(){return URI.create(effective()+"/dashboard/api/pair/redeem");}
++    public static URI check(){return URI.create(effective()+"/dashboard/api/client/check");}
++    public static URI socket(){return URI.create(effective().replaceFirst("^http","ws")+"/dashboard/ws/client");}
++    public static String hostLabel(){URI u=URI.create(effective());return u.getPort()>0?u.getHost()+":"+u.getPort():u.getHost();}
++    public static synchronized void setForTest(String value){base=normalize(value);}
++    public static synchronized void reload(){base=load();}
++    private static String load(){
++        String v=System.getProperty(PROPERTY);
++        if(v==null||v.isBlank())v=System.getenv(ENV);
++        if(v==null||v.isBlank()){
++            try{var p=net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("gonuts-panel-link.json");
++                if(java.nio.file.Files.isRegularFile(p))v=DashboardProtocol.JSON.readTree(java.nio.file.Files.readString(p)).path("baseUrl").asText("");
++            }catch(Throwable ignored){}
++        }
++        try{return normalize(v);}catch(IllegalArgumentException e){return null;}
++    }
++    static String normalize(String value){
++        if(value==null||value.isBlank())return null;
++        URI u=URI.create(value.strip());
++        if(u.getScheme()==null||!(u.getScheme().equals("https")||u.getScheme().equals("http")))throw new IllegalArgumentException("base URL must be http(s)");
++        if(u.getHost()==null||u.getHost().isBlank())throw new IllegalArgumentException("base URL needs a host");
++        if(u.getRawPath()!=null&&!u.getRawPath().isEmpty()&&!u.getRawPath().equals("/"))throw new IllegalArgumentException("base URL must not have a path");
++        if(u.getRawQuery()!=null||u.getRawFragment()!=null||u.getUserInfo()!=null)throw new IllegalArgumentException("base URL must be an origin");
++        if(u.getScheme().equals("http")&&!privateHost(u.getHost()))throw new IllegalArgumentException("http is only allowed for localhost or a private LAN address");
++        return u.getScheme()+"://"+u.getHost()+(u.getPort()>0?":"+u.getPort():"");
++    }
++    private static boolean privateHost(String host){
++        String h=host.toLowerCase(java.util.Locale.ROOT);
++        return h.equals("localhost")||h.equals("127.0.0.1")||h.equals("::1")
++            ||h.matches("10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}")
++            ||h.matches("192\\.168\\.\\d{1,3}\\.\\d{1,3}")
++            ||h.matches("172\\.(1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}");
++    }
++}
 diff --git a/trader-fabric/src/test/java/dev/doughbay/fabric/DashboardWebsiteAccessTest.java b/trader-fabric/src/test/java/dev/doughbay/fabric/DashboardWebsiteAccessTest.java
 index d9769db..be0fa78 100644
 --- a/trader-fabric/src/test/java/dev/doughbay/fabric/DashboardWebsiteAccessTest.java
@@ -233,3 +286,51 @@ index 2e19812..f8c5331 100644
   @Test void projectionIsBoundedAndDoesNotForwardRawControllerDetail(){var j=DashboardProtocol.telemetry(1000,"DRUNK","Account",-5,Long.MAX_VALUE,Long.MAX_VALUE,-1,"build",false,900);assertEquals("UNKNOWN",j.path("state").asText());assertEquals(0,j.path("listed").asInt());assertEquals(1_000_000,j.path("slots").asInt());assertEquals(1_000_000_000_000L,j.path("bank").asLong());assertFalse(j.has("log"));assertFalse(j.has("credential"));assertEquals("Idle",j.path("detail").asText());assertFalse(j.path("controls").path("send_crash_report").asBoolean());}
   @Test void helloAdvertisesOnlyImplementedCapabilities(){var h=DashboardProtocol.hello("0.1.1","Laptop","hive_123");assertEquals(1,h.path("protocols").get(0).asInt());assertEquals(12,h.path("capabilities").size());assertTrue(h.path("capabilities").toString().contains("diagnostic_history"));assertTrue(h.path("capabilities").toString().contains("settings_analysis"));assertTrue(h.path("capabilities").toString().contains("read_savings"));assertTrue(h.path("capabilities").toString().contains("swarm_staff"));assertTrue(h.path("capabilities").toString().contains("swarm_rank"));assertTrue(h.path("capabilities").toString().contains("swarm_enable"));assertTrue(h.path("capabilities").toString().contains("swarm_disable"));assertFalse(h.toString().contains("send_crash_report"));assertFalse(DashboardProtocol.pairing("K7PQ-M3ZD","Laptop","build","hive_123").has("type"));}
   @Test void malformedAndOversizeFramesAreRejected(){assertThrows(Exception.class,()->DashboardProtocol.parse("[]"));assertThrows(Exception.class,()->DashboardProtocol.parse("x".repeat(32769)));}
+diff --git a/trader-fabric/src/test/java/dev/doughbay/fabric/hosted/RelayLinkTest.java b/trader-fabric/src/test/java/dev/doughbay/fabric/hosted/RelayLinkTest.java
+new file mode 100644
+index 0000000..e90c869
+--- /dev/null
++++ b/trader-fabric/src/test/java/dev/doughbay/fabric/hosted/RelayLinkTest.java
+@@ -0,0 +1,42 @@
++package dev.doughbay.fabric.hosted;
++
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import static org.junit.jupiter.api.Assertions.*;
++
++class RelayLinkTest {
++    /** The link origin is process-wide; never leak a test origin into another suite. */
++    @AfterEach void reset() { RelayLink.setForTest(null); }
++
++    @Test void derivesEndpoints() {
++        RelayLink.setForTest("https://panel.example.com");
++        assertTrue(RelayLink.enabled());
++        assertEquals("https://panel.example.com/dashboard/", RelayLink.page().toString());
++        assertEquals("https://panel.example.com/dashboard/api/pair/redeem", RelayLink.redeem().toString());
++        assertEquals("https://panel.example.com/dashboard/api/client/check", RelayLink.check().toString());
++        assertEquals("wss://panel.example.com/dashboard/ws/client", RelayLink.socket().toString());
++        assertEquals("panel.example.com", RelayLink.hostLabel());
++    }
++    @Test void rejectsPathAndInsecureRemote() {
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("https://panel.example.com/x"));
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("http://example.com"));
++        assertEquals("http://localhost:8080", RelayLink.normalize("http://localhost:8080/"));
++        assertEquals("http://192.168.1.50:8080", RelayLink.normalize("http://192.168.1.50:8080/"));
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("http://203.0.113.5:8080"));
++    }
++    @Test void disabledByDefault() {
++        RelayLink.setForTest("");
++        assertFalse(RelayLink.enabled());
++    }
++    @Test void privateLanHttpAcceptedAndPublicHttpRejected() {
++        RelayLink.setForTest("http://10.0.0.5:8080");
++        assertTrue(RelayLink.enabled());
++        assertEquals("http://10.0.0.5:8080/dashboard/", RelayLink.page().toString());
++        assertEquals("ws://10.0.0.5:8080/dashboard/ws/client", RelayLink.socket().toString());
++        assertEquals("10.0.0.5:8080", RelayLink.hostLabel());
++        assertEquals("http://172.16.4.2:9000", RelayLink.normalize("http://172.16.4.2:9000"));
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("http://172.15.0.1:8080"));
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("http://8.8.8.8"));
++        assertThrows(IllegalArgumentException.class, () -> RelayLink.setForTest("ftp://panel.example.com"));
++    }
++}
