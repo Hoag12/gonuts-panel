@@ -25,8 +25,40 @@
     <h2>No clients linked yet</h2>
     <p>Choose <strong>Link client</strong>, then enter the code in GoNuts → Dashboard → Link with code.</p>
   </section>
+  <section id="hiveOverview" class="hive-overview panel" hidden>
+    <div class="hive-head">
+      <div class="hive-title">
+        <span class="label">Hive</span>
+        <strong id="hiveName">—</strong>
+      </div>
+      <div class="hive-tools">
+        <label class="control-select">
+          <span class="label">Control</span>
+          <select id="scope" aria-label="Control scope"></select>
+        </label>
+        <div class="seg" id="viewToggle" role="group" aria-label="View mode">
+          <button type="button" data-view="split">Split</button>
+          <button type="button" data-view="hive">Hive</button>
+        </div>
+        <button class="btn gold" id="openHivePanel">Open hive panel</button>
+      </div>
+    </div>
+    <div class="hive-tiles">
+      <div class="tile"><span class="label">Auction slots</span><b id="hiveSlots">—</b></div>
+      <div class="tile"><span class="label">Bank</span><b id="hiveBank">—</b></div>
+      <div class="tile"><span class="label">Trades</span><b id="hiveTrades">—</b></div>
+      <div class="tile"><span class="label">Online</span><b id="hiveOnline">—</b></div>
+    </div>
+    <div class="hive-controls">
+      <button class="btn" id="hivePause">Pause</button>
+      <button class="btn" id="hiveResume">Resume</button>
+      <button class="btn" id="hiveRefresh">Refresh</button>
+      <span class="muted" id="hiveScopeNote"></span>
+    </div>
+    <div id="hiveStats" class="hive-stats"></div>
+    <p class="hive-note muted" id="hiveNote"></p>
+  </section>
   <section id="cards" class="cards" aria-live="polite"></section>
-  <section id="hive" class="hive panel" hidden></section>
 </main>
 <div id="modal" class="modal" hidden>
   <div class="modal-card panel">

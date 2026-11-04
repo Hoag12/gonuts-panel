@@ -175,6 +175,9 @@ func ParseTelemetry(raw []byte) (*store.Telemetry, error) {
 	if t.Profit, err = parseInterval(fields, "profit", true); err != nil {
 		return nil, err
 	}
+	if t.Revenue, err = parseInterval(fields, "revenue", true); err != nil {
+		return nil, err
+	}
 	if t.Sales, err = parseInterval(fields, "sales", false); err != nil {
 		return nil, err
 	}
@@ -301,7 +304,7 @@ func parseInterval(fields map[string]json.RawMessage, key string, money bool) (*
 			iv.H24 = &v
 		}
 	}
-	if key == "profit" {
+	if key == "profit" || key == "revenue" {
 		if s, present, err := stringValue(m, "source"); err != nil {
 			return nil, err
 		} else if present {

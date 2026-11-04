@@ -1,6 +1,8 @@
 const $ = (id) => document.getElementById(id);
 const CSRF = document.querySelector('meta[name="gonuts-csrf"]').content;
 let current = null, toastTimer = 0, countdown = 0;
+let viewMode = localStorage.getItem('gonuts.viewMode') || 'split';
+let scope = localStorage.getItem('gonuts.scope') || 'all';
 
 async function api(path, opts = {}) {
   const headers = new Headers(opts.headers || {});
@@ -116,33 +118,109 @@ function card(inst) {
   }
   return article;
 }
+function total(items, pick) {
+  let n = 0, any = false;
+  for (const item of items) {
+    const v = pick(item);
+    if (v == null || !Number.isFinite(Number(v))) continue;
+    n += Number(v); any = true;
+  }
+  return any ? n : null;
+}
+function stat(label, value, note, cls) {
+  const d = el('div', 'stat' + (cls ? ' ' + cls : ''));
+  d.append(el('span', 'label', label), el('b', '', value == null ? '—' : String(value)), el('small', '', note || ''));
+  return d;
+}
+function selectedInstallations(data) {
+  const all = data.installations || [];
+  return scope === 'all' ? all : all.filter(i => String(i.id) === String(scope));
+}
+function renderHive(data) {
+  const all = data.installations || [];
+  if (!all.length) { $('hiveOverview').hidden = true; return; }
+  $('hiveOverview').hidden = false;
+  if (scope !== 'all' && !all.some(i => String(i.id) === String(scope))) scope = 'all';
+  const selected = selectedInstallations(data);
+  const online = selected.filter(i => i.online);
+  const sel = $('scope');
+  const shape = all.map(i => i.id + ':' + (i.name || '') + ':' + (i.online ? 1 : 0)).join('|');
+  if (sel.dataset.shape !== shape) {
+    sel.replaceChildren();
+    sel.append(new Option('All accounts', 'all'));
+    for (const i of all) sel.append(new Option((i.name || 'GoNuts client') + (i.online ? '' : ' (offline)'), String(i.id)));
+    sel.dataset.shape = shape;
+  }
+  sel.value = scope;
+  $('hiveName').textContent = scope === 'all'
+    ? all.length + ' account' + (all.length === 1 ? '' : 's') + ' · ' + all.filter(i => i.online).length + ' online'
+    : (selected[0] ? selected[0].name : '—');
+  $('hiveScopeNote').textContent = scope === 'all' ? 'Controlling all accounts' : 'Controlling ' + (selected[0]?.name || 'account');
+  const listed = total(selected, i => i.telemetry?.listed);
+  const slots = total(selected, i => i.telemetry?.slots);
+  $('hiveSlots').textContent = listed == null && slots == null ? '—' : (listed == null ? '—' : listed) + ' / ' + (slots == null ? '—' : slots);
+  $('hiveBank').textContent = money(total(selected, i => i.telemetry?.bank));
+  $('hiveTrades').textContent = compact(total(selected, i => i.telemetry?.trades));
+  $('hiveOnline').textContent = online.length + ' / ' + selected.length;
+  const t = selected.map(i => i.telemetry || {});
+  const profit1 = total(t, x => x.profit?.h1), profit24 = total(t, x => x.profit?.h24);
+  const revenue1 = total(t, x => x.revenue?.h1), revenue24 = total(t, x => x.revenue?.h24);
+  const sales1 = total(t, x => x.sales?.h1), sales24 = total(t, x => x.sales?.h24);
+  const margin = profit24 != null && revenue24 != null && revenue24 > 0 ? (profit24 / revenue24 * 100).toFixed(1) + '%' : null;
+  $('hiveStats').replaceChildren(
+    stat('Bank now', money(total(t, x => x.bank)), 'a balance, not profit', 'gold'),
+    stat('Profit last 24h', money(profit24), 'booked by your hive', 'good'),
+    stat('Sales records last 24h', compact(sales24), 'booked sales, not unique trades'),
+    stat('Profit last hour', money(profit1), 'booked', 'good'),
+    stat('Sales records last hour', compact(sales1), 'booked'),
+    stat('Profit margin 24h', margin, 'profit / sales revenue'),
+    stat('Sales revenue last 24h', money(revenue24), 'gross booked sales'),
+    stat('Sales revenue last hour', money(revenue1), 'gross booked sales')
+  );
+  $('hiveNote').textContent = 'Hive totals · self-reported. Swarm ranking is not part of this self-hosted panel.';
+  $('hivePause').disabled = !online.length;
+  $('hiveResume').disabled = !online.length;
+  $('hiveRefresh').disabled = !online.length;
+  $('openHivePanel').disabled = !online.length;
+  $('hivePause').onclick = () => commandMany(online, 'pause');
+  $('hiveResume').onclick = () => commandMany(online, 'resume');
+  $('hiveRefresh').onclick = () => commandMany(online, 'snapshot');
+  $('openHivePanel').onclick = () => { if (online[0]) location.href = '/dashboard/panel/' + online[0].id + '/'; };
+  document.querySelectorAll('#viewToggle button').forEach(b => {
+    b.setAttribute('aria-pressed', b.dataset.view === viewMode ? 'true' : 'false');
+    b.onclick = () => { viewMode = b.dataset.view; localStorage.setItem('gonuts.viewMode', viewMode); if (current) render(current); };
+  });
+}
 function render(data) {
   current = data;
   $('who').textContent = data.user.globalName || data.user.username || '';
+  const all = data.installations || [];
+  const selected = selectedInstallations(data);
   const cards = $('cards');
-  cards.replaceChildren(...data.installations.map(card));
-  $('empty').hidden = data.installations.length > 0;
-  const hive = $('hive');
-  hive.replaceChildren();
-  if (data.hives && data.hives.length) {
-    const count = data.hives.reduce((n, h) => n + h.count, 0);
-    hive.hidden = false;
-    hive.append(el('span', '', 'You have ' + count + ' linked bot' + (count === 1 ? '' : 's') + '.'));
-    hive.append(el('span', 'spacer'));
-    const pauseAll = el('button', 'btn', 'Pause all');
-    pauseAll.onclick = () => data.installations.filter(i => i.online).forEach(i => command(i.id, 'pause'));
-    const resumeAll = el('button', 'btn', 'Resume all');
-    resumeAll.onclick = () => data.installations.filter(i => i.online).forEach(i => command(i.id, 'resume'));
-    hive.append(pauseAll, resumeAll);
-  } else hive.hidden = true;
+  const showCards = viewMode === 'split';
+  cards.hidden = !showCards || !selected.length;
+  cards.replaceChildren(...(showCards ? selected.map(card) : []));
+  $('empty').hidden = all.length > 0;
+  renderHive(data);
 }
 async function load() {
   try { render(await api('/dashboard/api/state', { cache: 'no-store' })); }
   catch (e) { toast(e.message, true); }
 }
-async function command(id, cmd) {
-  try { await api('/dashboard/api/installations/' + id + '/command', { method: 'POST', body: JSON.stringify({ command: cmd }) }); toast(cmd + ' sent'); setTimeout(load, 400); }
-  catch (e) { toast(e.message, true); }
+async function commandMany(insts, cmd) {
+  const targets = insts.filter(i => i.online);
+  if (!targets.length) { toast('No online accounts', true); return; }
+  try {
+    await Promise.all(targets.map(i => api('/dashboard/api/installations/' + i.id + '/command', {
+      method: 'POST', body: JSON.stringify({ command: cmd })
+    })));
+    toast(cmd + ' sent to ' + targets.length + ' account' + (targets.length === 1 ? '' : 's'));
+    setTimeout(load, 400);
+  } catch (e) { toast(e.message, true); }
+}
+function command(id, cmd) {
+  const inst = current && current.installations.find(i => i.id === id);
+  commandMany(inst ? [inst] : [], cmd);
 }
 async function renameInst(inst) {
   const name = prompt('Client label', inst.name || '');
@@ -173,6 +251,7 @@ async function linkClient() {
     tick();
   } catch (e) { toast(e.message, true); }
 }
+$('scope').addEventListener('change', e => { scope = e.target.value; localStorage.setItem('gonuts.scope', scope); if (current) render(current); });
 $('linkClient').onclick = linkClient;
 $('closeModal').onclick = () => { $('modal').hidden = true; load(); };
 $('copyCode').onclick = async () => { try { await navigator.clipboard.writeText($('code').textContent); toast('Copied'); } catch (e) { toast('Copy failed', true); } };

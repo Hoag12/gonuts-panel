@@ -6,7 +6,7 @@ import (
 )
 
 // TestHiddenAttributeIsHonored is a static guard for the dashboard's
-// hidden-toggled nodes. .modal sets display:grid and .hive sets display:flex,
+// hidden-toggled nodes. .modal sets display:grid and .hive-overview sets display:flex,
 // both of which outrank the UA [hidden] rule, so without an explicit [hidden]
 // override the pairing overlay renders on load, covers the page, and ignores
 // every hidden toggle. Browser rendering is verified separately.
@@ -24,7 +24,7 @@ func TestHiddenAttributeIsHonored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read embedded dashboard.html: %v", err)
 	}
-	for _, id := range []string{"modal", "hive", "empty", "toast"} {
+	for _, id := range []string{"modal", "hiveOverview", "empty", "toast"} {
 		hidden := regexp.MustCompile(`(?s)<[a-z]+[^>]*\sid="` + id + `"[^>]*\shidden\b`)
 		if !hidden.Match(page) {
 			t.Errorf("dashboard.html node id=%q is not hidden by default", id)

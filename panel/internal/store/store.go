@@ -97,6 +97,7 @@ type Telemetry struct {
 	Bank         *int64    `json:"bank,omitempty"`
 	Trades       int64     `json:"trades"`
 	Profit       *Interval `json:"profit,omitempty"`
+	Revenue      *Interval `json:"revenue,omitempty"`
 	Sales        *Interval `json:"sales,omitempty"`
 	Purchases    *Interval `json:"purchases,omitempty"`
 	Listings     *Interval `json:"listings,omitempty"`
@@ -912,6 +913,7 @@ func CloneTelemetry(in *Telemetry) *Telemetry {
 		out.Bank = &v
 	}
 	out.Profit = cloneInterval(in.Profit)
+	out.Revenue = cloneInterval(in.Revenue)
 	out.Sales = cloneInterval(in.Sales)
 	out.Purchases = cloneInterval(in.Purchases)
 	out.Listings = cloneInterval(in.Listings)

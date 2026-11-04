@@ -77,6 +77,7 @@ func TestParseTelemetryUnknownStateAndCountClamps(t *testing.T) {
 
 func TestParseTelemetryIntervals(t *testing.T) {
 	tel, err := ParseTelemetry([]byte(`{"profit":{"h1":-5000000000000,"h24":7,"source":"booked"},
+		"revenue":{"h1":123,"h24":456,"source":"booked_sales"},
 		"sales":{"h1":-3,"h24":99999999},"purchases":{},"listings":{"h24":2},"reprices":{"h1":1}}`))
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +85,10 @@ func TestParseTelemetryIntervals(t *testing.T) {
 	if tel.Profit == nil || tel.Profit.H1 == nil || *tel.Profit.H1 != -maxMoney ||
 		tel.Profit.H24 == nil || *tel.Profit.H24 != 7 || tel.Profit.Source != "booked" {
 		t.Fatalf("profit=%+v", tel.Profit)
+	}
+	if tel.Revenue == nil || tel.Revenue.H1 == nil || *tel.Revenue.H1 != 123 ||
+		tel.Revenue.H24 == nil || *tel.Revenue.H24 != 456 || tel.Revenue.Source != "booked_sales" {
+		t.Fatalf("revenue=%+v", tel.Revenue)
 	}
 	if tel.Sales == nil || tel.Sales.H1 == nil || *tel.Sales.H1 != 0 ||
 		tel.Sales.H24 == nil || *tel.Sales.H24 != maxCount {
