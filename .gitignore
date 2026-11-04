@@ -12,3 +12,5 @@ panel/bin/
 mod/
 dist/
 panel/dist/
+
+.local-panel-data*/
