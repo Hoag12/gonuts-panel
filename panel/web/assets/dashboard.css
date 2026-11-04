@@ -8,6 +8,10 @@
 [hidden] { display:none !important; }
 body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 var(--pixel); }
 .top { display:flex; align-items:center; gap:14px; padding:14px 20px; flex-wrap:wrap; }
+.brand { display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit; }
+.brand img { width:28px; height:28px; display:block; }
+.brand:hover h1 { color:var(--text); }
+.brand:hover h1 span { color:var(--gold); }
 .top h1 { margin:0; font-size:20px; color:var(--gold); font-weight:400; letter-spacing:.03em; }
 .top h1 span { color:var(--text); }
 .top-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }

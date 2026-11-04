@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const CSRF = document.querySelector('meta[name="gonuts-csrf"]').content;
 let current = null, toastTimer = 0, countdown = 0;
+const inflight = new Set();
 let viewMode = localStorage.getItem('gonuts.viewMode') || 'split';
 let scope = localStorage.getItem('gonuts.scope') || 'all';
 
@@ -87,16 +88,19 @@ function card(inst) {
   article.append(swarm);
 
   const actions = el('div', 'actions');
+  const busy = inflight.has(inst.id);
   const open = el('button', 'btn gold', 'Open panel');
-  open.onclick = () => { location.href = '/dashboard/panel/' + inst.id + '/'; };
-  const pause = el('button', 'btn', 'Pause');
-  pause.disabled = !inst.online || !(t.controls ? t.controls.pause : false);
+  // New tab on purpose: the dashboard keeps streaming while the relayed panel loads.
+  open.onclick = () => window.open('/dashboard/panel/' + inst.id + '/', '_blank', 'noopener');
+  const paused = state === 'PAUSED';
+  const pause = el('button', 'btn' + (paused ? '' : ' gold'), 'Pause');
+  pause.disabled = !inst.online || busy;
   pause.onclick = () => command(inst.id, 'pause');
-  const resume = el('button', 'btn', 'Resume');
-  resume.disabled = !inst.online || !(t.controls ? t.controls.resume : false);
+  const resume = el('button', 'btn' + (paused ? ' gold' : ''), 'Resume');
+  resume.disabled = !inst.online || busy;
   resume.onclick = () => command(inst.id, 'resume');
-  const refresh = el('button', 'btn', 'Refresh');
-  refresh.disabled = !inst.online;
+  const refresh = el('button', 'btn', busy ? 'Working…' : 'Refresh');
+  refresh.disabled = !inst.online || busy;
   refresh.onclick = () => command(inst.id, 'snapshot');
   actions.append(open, pause, resume, refresh);
   article.append(actions);
@@ -210,15 +214,41 @@ async function load() {
   catch (e) { toast(e.message, true); }
 }
 async function commandMany(insts, cmd) {
-  const targets = insts.filter(i => i.online);
+  // The mod decides whether a command applies; the dashboard only requires the
+  // client to be online, so stale telemetry control flags cannot wedge a button.
+  const targets = insts.filter(i => i.online && !inflight.has(i.id));
   if (!targets.length) { toast('No online accounts', true); return; }
+  targets.forEach(i => inflight.add(i.id));
+  if (current) render(current);
   try {
     await Promise.all(targets.map(i => api('/dashboard/api/installations/' + i.id + '/command', {
       method: 'POST', body: JSON.stringify({ command: cmd })
     })));
     toast(cmd + ' sent to ' + targets.length + ' account' + (targets.length === 1 ? '' : 's'));
-    setTimeout(load, 400);
+    [600, 1600, 3200].forEach(d => setTimeout(load, d));
   } catch (e) { toast(e.message, true); }
+  finally {
+    setTimeout(() => {
+      targets.forEach(i => inflight.delete(i.id));
+      outcome(targets.map(i => i.id), cmd);
+    }, 3400);
+  }
+}
+async function outcome(ids, cmd) {
+  try {
+    const data = await api('/dashboard/api/state', { cache: 'no-store' });
+    current = data;
+    render(data);
+    for (const id of ids) {
+      const inst = (data.installations || []).find(i => i.id === id);
+      const lc = inst && inst.lastCommand;
+      if (lc && lc.command === cmd && lc.state === 'rejected') {
+        toast((inst.name || 'client') + ': ' + cmd + ' was rejected' +
+          (lc.reason ? ' · ' + lc.reason : ''), true);
+        return;
+      }
+    }
+  } catch (e) {}
 }
 function command(id, cmd) {
   const inst = current && current.installations.find(i => i.id === id);
@@ -245,6 +275,7 @@ async function linkClient() {
     $('code').textContent = p.code;
     $('modal').hidden = false;
     countdown = Math.max(0, Math.floor((p.expiresAt - Date.now()) / 1000));
+    $('copyCode').disabled = false;
     const tick = () => {
       if ($('modal').hidden) return;
       $('codeExpiry').textContent = countdown > 0 ? 'Expires in ' + Math.floor(countdown / 60) + ':' + String(countdown % 60).padStart(2, '0') : 'Code expired — create a new one';
@@ -255,7 +286,8 @@ async function linkClient() {
 }
 $('scope').addEventListener('change', e => { scope = e.target.value; localStorage.setItem('gonuts.scope', scope); if (current) render(current); });
 $('linkClient').onclick = linkClient;
-$('closeModal').onclick = () => { $('modal').hidden = true; load(); };
+$('newCode').onclick = linkClient;
+$('closeModal').onclick = () => { $('modal').hidden = true; countdown = 0; load(); };
 $('copyCode').onclick = async () => { try { await navigator.clipboard.writeText($('code').textContent); toast('Copied'); } catch (e) { toast('Copy failed', true); } };
 
 let sse = null;

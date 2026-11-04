@@ -10,7 +10,10 @@
 </head>
 <body>
 <header class="top">
-  <h1>GoNuts <span>dashboard</span></h1>
+  <a class="brand" href="/dashboard" title="Back to the dashboard">
+    <img src="/assets/logo.png" alt="" width="28" height="28">
+    <h1>GoNuts <span>dashboard</span></h1>
+  </a>
   <div class="top-right">
     <div class="seg" id="viewToggle" role="group" aria-label="View mode">
       <button type="button" data-view="split">Split</button>
@@ -63,11 +66,13 @@
 <div id="modal" class="modal" hidden>
   <div class="modal-card panel">
     <h2>Link a client</h2>
-    <p>Enter this one-use code in the intended bot within five minutes.</p>
+    <p>Enter this one-use code in the bot: <strong>GoNuts → Dashboard → Link with code</strong>.
+      Keep this tab open — the client appears here as soon as it redeems the code.</p>
     <div class="code" id="code">…</div>
     <p class="muted" id="codeExpiry"></p>
     <div class="modal-actions">
       <button class="btn" id="copyCode">Copy code</button>
+      <button class="btn ghost" id="newCode">New code</button>
       <button class="btn ghost" id="closeModal">Close</button>
     </div>
   </div>
