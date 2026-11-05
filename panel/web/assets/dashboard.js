@@ -71,20 +71,21 @@ function card(inst) {
   rows.append(row('profit 24h', t.profit && t.profit.h24 != null ? money(t.profit.h24) : '—'));
   rows.append(row('sales 1h / 24h', (t.sales && t.sales.h1 != null ? compact(t.sales.h1) : '—') + ' / ' + (t.sales && t.sales.h24 != null ? compact(t.sales.h24) : '—')));
   rows.append(row('purchases 24h', t.purchases && t.purchases.h24 != null ? compact(t.purchases.h24) : '—'));
-  rows.append(row('listings 24h', t.listings && t.listings.h24 != null ? compact(t.listings.h24) : '—'));
-  rows.append(row('reprices 24h', t.reprices && t.reprices.h24 != null ? compact(t.reprices.h24) : '—'));
-  rows.append(row('listed / slots', (t.listed == null ? '—' : t.listed) + ' / ' + (t.slots == null ? '—' : t.slots), true));
-  rows.append(row('trades (session)', t.trades == null ? '—' : t.trades, true));
+  rows.append(row('listings 1h', t.listings && t.listings.h1 != null ? compact(t.listings.h1) : '—'));
+  rows.append(row('reprices 1h', t.reprices && t.reprices.h1 != null ? compact(t.reprices.h1) : '—'));
+  rows.append(row('listed / slots', (t.listed == null ? '—' : t.listed) + ' / ' + (t.slots == null ? '—' : t.slots)));
+  rows.append(row('trades (session)', t.trades == null ? '—' : t.trades));
   rows.append(row('profit source', source(t.profit), true));
   article.append(rows);
 
-  const swarm = el('div', 'swarm');
-  swarm.append(el('span', 'tag', 'Swarm'));
-  const enabled = t.swarm && t.swarm.enabled;
-  swarm.append(el('span', enabled ? 'on' : 'off', enabled ? 'sharing market observations' : 'not sharing'));
-  swarm.append(el('span', '', '· guidance ' + (t.swarm && t.swarm.guidanceEnabled ? 'on' : 'off')));
-  swarm.append(el('span', '', '· ' + (t.swarm && t.swarm.eligible ? 'eligible' : 'not eligible')));
-  article.append(swarm);
+  if (t.swarm && t.swarm.enabled) {
+    const swarm = el('div', 'swarm');
+    swarm.append(el('span', 'tag', 'Swarm'));
+    swarm.append(el('span', 'on', 'sharing market observations'));
+    swarm.append(el('span', '', '· guidance ' + (t.swarm.guidanceEnabled ? 'on' : 'off')));
+    swarm.append(el('span', '', '· ' + (t.swarm.eligible ? 'eligible' : 'not eligible')));
+    article.append(swarm);
+  }
 
   const actions = el('div', 'actions');
   const open = el('button', 'btn gold', 'Open panel');
@@ -132,6 +133,9 @@ function stat(label, value, note, cls) {
   d.append(el('span', 'label', label), el('b', '', value == null ? '—' : String(value)), el('small', '', note || ''));
   return d;
 }
+function rate(value) { return value == null ? null : (Math.round(value * 10) / 10).toFixed(1); }
+function perHourNote(value) { return value == null ? '' : ' · ' + money(value / 24) + '/h'; }
+function perHourCount(value) { return value == null ? '' : ' · ' + rate(value / 24) + '/h'; }
 function statElements(items) {
   const t = items.map(i => i.telemetry || {});
   const profit1 = total(t, x => x.profit?.h1), profit24 = total(t, x => x.profit?.h24);
@@ -140,12 +144,12 @@ function statElements(items) {
   const margin = profit24 != null && revenue24 != null && revenue24 > 0 ? (profit24 / revenue24 * 100).toFixed(1) + '%' : null;
   return [
     stat('Bank now', money(total(t, x => x.bank)), 'a balance, not profit', 'gold'),
-    stat('Profit last 24h', money(profit24), 'booked by your hive', 'good'),
-    stat('Sales records last 24h', compact(sales24), 'booked sales, not unique trades'),
+    stat('Profit last 24h', money(profit24), 'booked by your hive' + perHourNote(profit24), 'good'),
+    stat('Sales records last 24h', compact(sales24), 'booked sales, not unique trades' + perHourCount(sales24)),
     stat('Profit last hour', money(profit1), 'booked', 'good'),
     stat('Sales records last hour', compact(sales1), 'booked'),
     stat('Profit margin 24h', margin, 'profit / sales revenue'),
-    stat('Sales revenue last 24h', money(revenue24), 'gross booked sales'),
+    stat('Sales revenue last 24h', money(revenue24), 'gross booked sales' + perHourNote(revenue24)),
     stat('Sales revenue last hour', money(revenue1), 'gross booked sales')
   ];
 }
@@ -173,16 +177,25 @@ function renderHive(data) {
   $('hiveName').textContent = scope === 'all'
     ? all.length + ' account' + (all.length === 1 ? '' : 's') + ' · ' + all.filter(i => i.online).length + ' online'
     : (selected[0] ? selected[0].name : '—');
-  $('hiveScopeNote').textContent = scope === 'all' ? 'Controlling all accounts' : 'Controlling ' + (selected[0]?.name || 'account');
-  const listed = total(selected, i => i.telemetry?.listed);
-  const slots = total(selected, i => i.telemetry?.slots);
+  $('hiveScopeNote').textContent = scope === 'all'
+    ? (online.length === selected.length ? 'Controlling all accounts' : 'Controlling online accounts')
+    : 'Controlling ' + (selected[0]?.name || 'account');
+  const live = selected.filter(i => i.online);
+  const listed = total(live, i => i.telemetry?.listed);
+  const slots = total(live, i => i.telemetry?.slots);
   $('hiveSlots').textContent = listed == null && slots == null ? '—' : (listed == null ? '—' : listed) + ' / ' + (slots == null ? '—' : slots);
-  $('hiveBank').textContent = money(total(selected, i => i.telemetry?.bank));
-  $('hiveTrades').textContent = compact(total(selected, i => i.telemetry?.trades));
+  $('hiveBank').textContent = money(total(live, i => i.telemetry?.bank));
+  $('hiveTrades').textContent = compact(total(live, i => i.telemetry?.trades));
   $('hiveOnline').textContent = online.length + ' / ' + selected.length;
-  $('hiveStats').replaceChildren(...statElements(selected));
-  $('splitStats').replaceChildren(...statElements(all));
-  $('hiveNote').textContent = 'Hive totals · self-reported. Swarm ranking is not part of this self-hosted panel.';
+  $('hiveStats').replaceChildren(...statElements(live));
+  $('splitStats').replaceChildren(...statElements(all.filter(i => i.online)));
+  $('hiveNote').textContent = live.length
+    ? 'Hive totals · online accounts only · self-reported. Swarm ranking is not part of this self-hosted panel.'
+    : 'Hive totals · no online accounts.';
+  if ($('splitNote')) {
+    $('splitNote').hidden = viewMode !== 'split';
+    $('splitNote').textContent = live.length ? 'Hive totals · online accounts only · self-reported.' : 'Hive totals · no online accounts.';
+  }
   $('hivePause').disabled = !online.length;
   $('hiveResume').disabled = !online.length;
   $('hiveRefresh').disabled = !online.length;
