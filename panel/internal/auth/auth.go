@@ -81,6 +81,16 @@ func CookieToken(r *http.Request) string {
 
 // SetSessionCookie stores a session token in an HttpOnly, SameSite=Lax cookie.
 func SetSessionCookie(w http.ResponseWriter, token string, secure bool) {
+	setSessionCookie(w, token, secure, sessionMaxAge)
+}
+
+// SetSessionCookieSession stores the token without a Max-Age, so the browser
+// drops it when it closes: the "remember me" unchecked case.
+func SetSessionCookieSession(w http.ResponseWriter, token string, secure bool) {
+	setSessionCookie(w, token, secure, 0)
+}
+
+func setSessionCookie(w http.ResponseWriter, token string, secure bool, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    token,
@@ -88,7 +98,7 @@ func SetSessionCookie(w http.ResponseWriter, token string, secure bool) {
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   sessionMaxAge,
+		MaxAge:   maxAge,
 	})
 }
 

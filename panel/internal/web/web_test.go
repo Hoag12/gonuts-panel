@@ -2474,7 +2474,7 @@ func newLocalServer(t *testing.T, password, user string) (*Server, *store.Store)
 // localLogin posts the sign-in form. An empty origin omits the header; an
 // empty ip leaves the recorder's default remote address.
 func localLogin(s *Server, password, origin, ip string) *httptest.ResponseRecorder {
-	body := url.Values{"password": {password}}.Encode()
+	body := url.Values{"password": {password}, "remember": {"1"}}.Encode()
 	req := httptest.NewRequest("POST", "/auth/local", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if origin != "" {
@@ -2486,6 +2486,31 @@ func localLogin(s *Server, password, origin, ip string) *httptest.ResponseRecord
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	return rec
+}
+
+func TestLocalLoginWithoutRememberIsSessionCookie(t *testing.T) {
+	s, _ := newLocalServer(t, "hunter2", "owner")
+	body := url.Values{"password": {"hunter2"}}.Encode()
+	req := httptest.NewRequest("POST", "/auth/local", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://panel.example.com")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	found := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.CookieName {
+			found = true
+			if c.MaxAge != 0 {
+				t.Fatalf("unchecked remember should omit Max-Age, got %d", c.MaxAge)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no session cookie")
+	}
 }
 
 func TestLocalLoginCreatesSession(t *testing.T) {

@@ -223,7 +223,11 @@ func (s *Server) authLocal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign-in failed", http.StatusInternalServerError)
 		return
 	}
-	auth.SetSessionCookie(w, token, s.Cfg.CookieSecure)
+	if r.PostForm.Get("remember") != "" {
+		auth.SetSessionCookie(w, token, s.Cfg.CookieSecure)
+	} else {
+		auth.SetSessionCookieSession(w, token, s.Cfg.CookieSecure)
+	}
 	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 }
 

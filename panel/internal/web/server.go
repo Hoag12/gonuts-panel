@@ -361,6 +361,7 @@ const (
 	loginLocalForm = `<form class="local-form" method="post" action="/auth/local">
     <label for="local-password">Password</label>
     <input id="local-password" name="password" type="password" autocomplete="current-password" required autofocus>
+    <label class="remember" for="remember"><input id="remember" name="remember" type="checkbox" value="1"> Remember me</label>
     <button class="btn gold wide" type="submit">Sign in</button>
   </form>`
 	loginDiscordLink = `<a class="btn gold wide" href="/auth/login">Sign in with Discord</a>`
