@@ -13,6 +13,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -100,6 +101,29 @@ func (s *Server) originAllowed(r *http.Request) bool {
 		return true
 	}
 	return auth.OriginAllowedAny(r, s.Cfg.ExtraOrigins)
+}
+
+// sameHostRequest accepts a request whose Origin and Referer are both absent
+// but whose Host is the panel's own. Some in-app browsers and webviews post
+// forms without either header; a cross-site post still carries its Origin, so
+// this does not widen the check beyond same-host traffic.
+func (s *Server) sameHostRequest(r *http.Request) bool {
+	if r.Header.Get("Origin") != "" || r.Header.Get("Referer") != "" {
+		return false
+	}
+	base, err := url.Parse(s.Cfg.PublicBaseURL)
+	if err != nil || base.Host == "" {
+		return false
+	}
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	want := base.Hostname()
+	return strings.EqualFold(host, want)
 }
 
 func (s *Server) Handler() http.Handler {

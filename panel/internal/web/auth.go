@@ -192,7 +192,7 @@ func (s *Server) authLocal(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if !s.originAllowed(r) {
+	if !s.originAllowed(r) && !s.sameHostRequest(r) {
 		http.Error(w, "invalid request origin", http.StatusForbidden)
 		return
 	}

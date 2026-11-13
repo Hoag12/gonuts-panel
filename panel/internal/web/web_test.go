@@ -2488,6 +2488,28 @@ func localLogin(s *Server, password, origin, ip string) *httptest.ResponseRecord
 	return rec
 }
 
+func TestLocalLoginWithoutOriginSameHost(t *testing.T) {
+	s, _ := newLocalServer(t, "hunter2", "owner")
+	body := url.Values{"password": {"hunter2"}, "remember": {"1"}}.Encode()
+	post := func(origin string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/auth/local", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		req.Host = "panel.example.com"
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := post(""); rec.Code != http.StatusSeeOther {
+		t.Fatalf("same-host post without Origin status=%d", rec.Code)
+	}
+	if rec := post("https://evil.example"); rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin post status=%d", rec.Code)
+	}
+}
+
 func TestLocalLoginWithoutRememberIsSessionCookie(t *testing.T) {
 	s, _ := newLocalServer(t, "hunter2", "owner")
 	body := url.Values{"password": {"hunter2"}}.Encode()
