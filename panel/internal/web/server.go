@@ -414,7 +414,7 @@ func (s *Server) loginHTML(localError bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	local := s.Cfg.LocalAuthEnabled()
+	local := s.Cfg.LocalAuthEnabled() && !s.Cfg.HideLocalLogin
 	form, link, notice := "", "", ""
 	switch {
 	case local && s.Cfg.DiscordEnabled:

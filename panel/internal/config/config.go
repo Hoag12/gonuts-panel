@@ -40,6 +40,10 @@ type Config struct {
 	LocalPassword string
 	// LocalUser is the account id and display name local sign-in creates.
 	LocalUser string
+	// HideLocalLogin keeps the local password endpoint available for
+	// automation (the bridge signs in with it) while the login page offers
+	// only Discord.
+	HideLocalLogin bool
 	// AuthDisabled auto-creates a loopback-only session for the dashboard.
 	// It is refused unless both GONUTS_ADDR and GONUTS_PUBLIC_BASE_URL are
 	// loopback, so a LAN/public panel can never expose unauthenticated controls
@@ -98,6 +102,7 @@ func Load() (Config, error) {
 		cfg.PanelCacheBytes = n
 	}
 	cfg.CookieSecure = boolEnv("GONUTS_COOKIE_SECURE", strings.HasPrefix(base, "https://"))
+	cfg.HideLocalLogin = boolEnv("GONUTS_HIDE_LOCAL_LOGIN", false)
 	if cfg.DevLogin && !IsLoopbackBaseURL(base) {
 		return Config{}, fmt.Errorf("GONUTS_DEV_LOGIN requires a loopback GONUTS_PUBLIC_BASE_URL (localhost, 127.0.0.1, or [::1])")
 	}

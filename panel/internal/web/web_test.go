@@ -2488,6 +2488,17 @@ func localLogin(s *Server, password, origin, ip string) *httptest.ResponseRecord
 	return rec
 }
 
+func TestHiddenLocalLoginOffersNoPasswordForm(t *testing.T) {
+	s, _ := newLocalServer(t, "hunter2", "owner")
+	s.Cfg.HideLocalLogin = true
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/dashboard", nil))
+	page := rec.Body.String()
+	if strings.Contains(page, "local-password") {
+		t.Fatal("password form still shown while hidden")
+	}
+}
+
 func TestLocalLoginWithoutOriginSameHost(t *testing.T) {
 	s, _ := newLocalServer(t, "hunter2", "owner")
 	body := url.Values{"password": {"hunter2"}, "remember": {"1"}}.Encode()
