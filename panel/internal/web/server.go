@@ -134,6 +134,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /manifest.json", s.manifest)
 	mux.HandleFunc("GET /auth/login", s.authLogin)
 	mux.HandleFunc("GET /auth/callback", s.authCallback)
+	mux.HandleFunc("GET /auth/local", pageRedirect("/dashboard"))
 	mux.HandleFunc("POST /auth/local", s.authLocal)
 	mux.HandleFunc("POST /auth/logout", s.authLogout)
 	mux.HandleFunc("GET /auth/dev", s.authDev)
