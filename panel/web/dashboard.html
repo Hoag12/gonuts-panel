@@ -19,7 +19,7 @@
 <body>
 <header class="top">
   <a class="brand" href="/dashboard" title="Back to the dashboard">
-    <img src="/assets/logo.png" alt="" width="28" height="28">
+    <img src="/assets/logo.png" alt="" height="28">
     <h1>GoNuts <span>dashboard</span></h1>
   </a>
   <div class="top-right">
@@ -27,11 +27,16 @@
       <button type="button" data-view="split">Split</button>
       <button type="button" data-view="hive">Hive</button>
     </div>
+    <button class="btn" id="maskNames" type="button" aria-pressed="false" title="Hide account names">Hide names</button>
     <button class="btn gold" id="linkClient">Link client</button>
     <span id="who" class="who"></span>
   </div>
 </header>
 <main>
+  <section id="accounts" class="panel accounts" hidden>
+    <h2 class="title">Accounts</h2>
+    <div id="accountRows" class="accounts-body"></div>
+  </section>
   <section id="empty" class="empty panel" hidden>
     <h2>No clients linked yet</h2>
     <p>Choose <strong>Link client</strong>, then enter the code in GoNuts → Dashboard → Link with code.</p>

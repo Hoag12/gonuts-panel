@@ -3,6 +3,8 @@ const CSRF = document.querySelector('meta[name="gonuts-csrf"]').content;
 let current = null, toastTimer = 0, countdown = 0;
 let viewMode = localStorage.getItem('gonuts.viewMode') || 'split';
 let scope = localStorage.getItem('gonuts.scope') || 'all';
+let maskNames = localStorage.getItem('gonuts.mask') === '1';
+function displayName(inst, i) { return maskNames ? 'Account ' + (i + 1) : (inst.name || 'GoNuts client'); }
 
 async function api(path, opts = {}) {
   const headers = new Headers(opts.headers || {});
@@ -47,11 +49,11 @@ function row(label, value, full) {
   d.append(el('dt', '', label), el('dd', '', value == null ? '—' : String(value)));
   return d;
 }
-function card(inst) {
+function card(inst, index) {
   const t = inst.telemetry || {};
   const article = el('article', 'card');
   const head = el('div', 'card-head');
-  head.append(el('h2', '', inst.name || 'GoNuts client'));
+  head.append(el('h2', '', displayName(inst, index)));
   head.append(el('span', 'pill' + (inst.online ? '' : ' offline'), inst.online ? 'online' : 'offline'));
   article.append(head);
 
@@ -171,16 +173,16 @@ function renderHive(data) {
   if (sel.dataset.shape !== shape) {
     sel.replaceChildren();
     sel.append(new Option('All accounts', 'all'));
-    for (const i of all) sel.append(new Option((i.name || 'GoNuts client') + (i.online ? '' : ' (offline)'), String(i.id)));
+    all.forEach((i, idx) => sel.append(new Option(displayName(i, idx) + (i.online ? '' : ' (offline)'), String(i.id))));
     sel.dataset.shape = shape;
   }
   sel.value = scope;
   $('hiveName').textContent = scope === 'all'
     ? all.length + ' account' + (all.length === 1 ? '' : 's') + ' · ' + all.filter(i => i.online).length + ' online'
-    : (selected[0] ? selected[0].name : '—');
+    : (selected[0] ? displayName(selected[0], all.indexOf(selected[0])) : '—');
   $('hiveScopeNote').textContent = scope === 'all'
     ? (online.length === selected.length ? 'Controlling all accounts' : 'Controlling online accounts')
-    : 'Controlling ' + (selected[0]?.name || 'account');
+    : 'Controlling ' + (selected[0] ? displayName(selected[0], all.indexOf(selected[0])) : 'account');
   const live = selected.filter(i => i.online);
   const listed = total(live, i => i.telemetry?.listed);
   const slots = total(live, i => i.telemetry?.slots);
@@ -208,6 +210,34 @@ function renderHive(data) {
     b.onclick = () => { viewMode = b.dataset.view; localStorage.setItem('gonuts.viewMode', viewMode); if (current) render(current); };
   });
 }
+function renderAccounts(all) {
+  const panel = $('accounts');
+  if (!panel) return;
+  const rows = $('accountRows');
+  if (!all.length) { panel.hidden = true; rows.replaceChildren(); return; }
+  panel.hidden = false;
+  const nodes = [];
+  all.forEach((inst, i) => {
+    const row = el('div', 'acc-row');
+    row.append(el('span', 'acc-name', displayName(inst, i)));
+    row.append(el('span', 'acc-state', inst.online ? 'online' : 'offline'));
+    const acts = el('div', 'acc-actions');
+    const ren = el('button', '', 'Rename');
+    ren.onclick = () => renameInst(inst);
+    const unl = el('button', '', 'Unlink');
+    unl.onclick = () => unlinkInst(inst);
+    acts.append(ren, unl);
+    row.append(acts);
+    nodes.push(row);
+  });
+  const link = el('div', 'acc-link');
+  const btn = el('button', 'btn gold', 'Link account by code');
+  btn.onclick = () => linkClient();
+  link.append(btn, el('span', 'muted', 'Generates a one-use code to enter in GoNuts → Dashboard → Link with code.'));
+  nodes.push(link);
+  rows.replaceChildren(...nodes);
+}
+
 function render(data) {
   current = data;
   $('who').textContent = data.user.globalName || data.user.username || '';
@@ -215,8 +245,9 @@ function render(data) {
   const cards = $('cards');
   const showCards = viewMode === 'split';
   cards.hidden = !showCards || !all.length;
-  cards.replaceChildren(...(showCards ? all.map(card) : []));
+  cards.replaceChildren(...(showCards ? all.map((inst, i) => card(inst, i)) : []));
   $('empty').hidden = all.length > 0;
+  renderAccounts(all);
   renderHive(data);
 }
 async function load() {
@@ -267,6 +298,15 @@ async function linkClient() {
     tick();
   } catch (e) { toast(e.message, true); }
 }
+$('maskNames').onclick = () => {
+  maskNames = !maskNames;
+  localStorage.setItem('gonuts.mask', maskNames ? '1' : '0');
+  $('maskNames').setAttribute('aria-pressed', maskNames ? 'true' : 'false');
+  $('maskNames').textContent = maskNames ? 'Show names' : 'Hide names';
+  if (current) render(current);
+};
+$('maskNames').setAttribute('aria-pressed', maskNames ? 'true' : 'false');
+$('maskNames').textContent = maskNames ? 'Show names' : 'Hide names';
 $('scope').addEventListener('change', e => { scope = e.target.value; localStorage.setItem('gonuts.scope', scope); if (current) render(current); });
 $('linkClient').onclick = linkClient;
 $('closeModal').onclick = () => { $('modal').hidden = true; load(); };
