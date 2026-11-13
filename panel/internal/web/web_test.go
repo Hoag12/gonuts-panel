@@ -2508,6 +2508,20 @@ func TestLocalLoginWithoutOriginSameHost(t *testing.T) {
 	if rec := post("https://evil.example"); rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin post status=%d", rec.Code)
 	}
+	if rec := post("null"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("null-origin same-host status=%d", rec.Code)
+	}
+	{
+		req := httptest.NewRequest("POST", "/auth/local", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Referer", "https://panel.example.com/dashboard")
+		req.Host = "panel.example.com"
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("same-host referer status=%d", rec.Code)
+		}
+	}
 }
 
 func TestLocalLoginWithoutRememberIsSessionCookie(t *testing.T) {

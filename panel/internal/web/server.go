@@ -103,14 +103,11 @@ func (s *Server) originAllowed(r *http.Request) bool {
 	return auth.OriginAllowedAny(r, s.Cfg.ExtraOrigins)
 }
 
-// sameHostRequest accepts a request whose Origin and Referer are both absent
-// but whose Host is the panel's own. Some in-app browsers and webviews post
-// forms without either header; a cross-site post still carries its Origin, so
-// this does not widen the check beyond same-host traffic.
+// sameHostRequest accepts a sign-in whose Origin is absent, "null" (a
+// sandboxed webview), or its own host, as long as the request arrived at the
+// panel's own Host. A cross-site post carries the foreign Origin and stays
+// refused.
 func (s *Server) sameHostRequest(r *http.Request) bool {
-	if r.Header.Get("Origin") != "" || r.Header.Get("Referer") != "" {
-		return false
-	}
 	base, err := url.Parse(s.Cfg.PublicBaseURL)
 	if err != nil || base.Host == "" {
 		return false
@@ -123,7 +120,21 @@ func (s *Server) sameHostRequest(r *http.Request) bool {
 		host = h
 	}
 	want := base.Hostname()
-	return strings.EqualFold(host, want)
+	if !strings.EqualFold(host, want) {
+		return false
+	}
+	ref := r.Header.Get("Origin")
+	if ref == "" || strings.EqualFold(ref, "null") {
+		ref = r.Header.Get("Referer")
+	}
+	if ref == "" {
+		return true
+	}
+	u, err := url.Parse(ref)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), want)
 }
 
 func (s *Server) Handler() http.Handler {
