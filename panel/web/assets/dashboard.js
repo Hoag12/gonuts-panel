@@ -230,11 +230,6 @@ function renderAccounts(all) {
     row.append(acts);
     nodes.push(row);
   });
-  const link = el('div', 'acc-link');
-  const btn = el('button', 'btn gold', 'Link account by code');
-  btn.onclick = () => linkClient();
-  link.append(btn, el('span', 'muted', 'Generates a one-use code to enter in GoNuts → Dashboard → Link with code.'));
-  nodes.push(link);
   rows.replaceChildren(...nodes);
 }
 
