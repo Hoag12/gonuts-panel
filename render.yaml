@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: gonuts-panel
+    runtime: docker
+    plan: free
+    region: singapore
+    rootDir: panel
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: false
+    envVars:
+      - key: GONUTS_ADDR
+        value: 0.0.0.0:10000
+      - key: GONUTS_DATA_DIR
+        value: /data
+      - key: GONUTS_PUBLIC_BASE_URL
+        sync: false
+      - key: GONUTS_ALLOWED_DISCORD_IDS
+        sync: false
+      - key: GONUTS_AUTH_DISABLED
+        value: "0"
+      - key: GONUTS_LOCAL_PASSWORD
+        sync: false
+      - key: GONUTS_COOKIE_SECURE
+        value: "1"
+      - key: GONUTS_TRUST_PROXY
+        value: "1"
+      - key: GONUTS_PANEL_CACHE_BYTES
+        value: "4194304"
+      - key: GOMEMLIMIT
+        value: 128MiB
+      - key: GOGC
+        value: "50"

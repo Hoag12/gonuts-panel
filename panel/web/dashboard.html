@@ -2,10 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GoNuts">
+<meta name="theme-color" content="#0b1118">
 <meta name="gonuts-csrf" content="{{CSRF}}">
 <title>GoNuts dashboard</title>
 <link rel="icon" href="/assets/logo.png">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" sizes="180x180" href="/assets/icon-180.png">
+<link rel="apple-touch-icon" sizes="192x192" href="/assets/icon-192.png">
 <link rel="stylesheet" href="/assets/dashboard.css">
 </head>
 <body>
@@ -21,10 +29,6 @@
     </div>
     <button class="btn gold" id="linkClient">Link client</button>
     <span id="who" class="who"></span>
-    <form method="post" action="/auth/logout">
-      <input type="hidden" name="csrf" value="{{CSRF}}">
-      <button class="btn ghost">Sign out</button>
-    </form>
   </div>
 </header>
 <main>
@@ -48,7 +52,7 @@
     <div class="hive-tiles">
       <div class="tile"><span class="label">Auction slots</span><b id="hiveSlots">—</b></div>
       <div class="tile"><span class="label">Bank</span><b id="hiveBank">—</b></div>
-      <div class="tile"><span class="label">Trades</span><b id="hiveTrades">—</b></div>
+      <div class="tile"><span class="label">Trades (session)</span><b id="hiveTrades">—</b></div>
       <div class="tile"><span class="label">Online</span><b id="hiveOnline">—</b></div>
     </div>
     <div class="hive-controls">
@@ -62,22 +66,22 @@
   </section>
   <section id="cards" class="cards" aria-live="polite"></section>
   <section id="splitStats" class="hive-stats split-stats" aria-label="Hive totals" hidden></section>
+  <p class="hive-note muted" id="splitNote" hidden>Hive totals · online accounts only · self-reported.</p>
 </main>
 <div id="modal" class="modal" hidden>
   <div class="modal-card panel">
     <h2>Link a client</h2>
-    <p>Enter this one-use code in the bot: <strong>GoNuts → Dashboard → Link with code</strong>.
-      Keep this tab open — the client appears here as soon as it redeems the code.</p>
+    <p>Enter this one-use code in the intended bot within five minutes.</p>
     <div class="code" id="code">…</div>
     <p class="muted" id="codeExpiry"></p>
     <div class="modal-actions">
       <button class="btn" id="copyCode">Copy code</button>
-      <button class="btn ghost" id="newCode">New code</button>
       <button class="btn ghost" id="closeModal">Close</button>
     </div>
   </div>
 </div>
 <div id="toast" class="toast" hidden></div>
+<button class="refresh-fab" id="refreshFab" type="button" aria-label="Refresh dashboard">&#8635;</button>
 <script src="/assets/dashboard.js"></script>
 </body>
 </html>

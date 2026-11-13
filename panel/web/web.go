@@ -11,7 +11,7 @@ import (
 // FS is the raw embedded filesystem: the dashboard and login shells plus the
 // assets subtree.
 //
-//go:embed dashboard.html login.html assets
+//go:embed dashboard.html login.html manifest.json assets
 var FS embed.FS
 
 // Assets is the filesystem served under /assets/.

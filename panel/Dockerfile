@@ -16,5 +16,5 @@ RUN adduser -D -u 1000 gonuts \
 COPY --from=build /out/gonuts-panel /usr/local/bin/gonuts-panel
 USER gonuts
 VOLUME ["/data"]
-EXPOSE 8080
-ENTRYPOINT ["gonuts-panel"]
+EXPOSE 10000
+ENTRYPOINT ["/bin/sh", "-c", "export GONUTS_ADDR=\"${GONUTS_ADDR:-0.0.0.0:${PORT:-10000}}\"; exec gonuts-panel"]

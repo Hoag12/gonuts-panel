@@ -14,6 +14,8 @@ import (
 // to the dashboard. The hosted panel must never post a logout, because the
 // dashboard session is not the mod's local login.
 var rewriteReplacer = strings.NewReplacer(
+	`<img src="/logo.png" alt="GoNuts">`, `<a href="/dashboard" title="Back to the dashboard"><img src="logo.png" alt="GoNuts"></a>`,
+	`<meta name="viewport" content="width=device-width, initial-scale=1">`, `<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">`,
 	`src="/logo.png"`, `src="logo.png"`,
 	`src='/panel.png`, `src='panel.png`,
 	`src='/item/`, `src='item/`,
@@ -65,6 +67,27 @@ const imageFallbackScript = `<script>(function(){` +
 	`i.src='panel.png?t='+Date.now();}` +
 	`setInterval(image,8000);})();</script>`
 
+// pwaTags makes a relayed panel page installable and full-screen on its own,
+// so opening the panel URL directly on a phone also hides Safari's chrome.
+const pwaTags = `<meta name="apple-mobile-web-app-capable" content="yes">` +
+	`<meta name="mobile-web-app-capable" content="yes">` +
+	`<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">` +
+	`<meta name="apple-mobile-web-app-title" content="GoNuts">` +
+	`<meta name="theme-color" content="#0b1118">` +
+	`<link rel="manifest" href="/manifest.json">` +
+	`<link rel="apple-touch-icon" sizes="180x180" href="/assets/icon-180.png">` +
+	`<style>body{padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);` +
+	`padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);}</style>`
+
+// offlineBadgeScript marks the panel's state badge OFFLINE while the client
+// cannot answer, so a cached page does not keep showing its last live state
+// after the game closes. A successful poll leaves the badge to the panel.
+const offlineBadgeScript = `<script>(function(){` +
+	`function mark(){var s=document.getElementById('state');if(!s)return;` +
+	`fetch('state',{cache:'no-store'}).then(function(r){if(!r.ok){s.textContent='OFFLINE';s.className='bad';}})` +
+	`.catch(function(){s.textContent='OFFLINE';s.className='bad';});}` +
+	`mark();setInterval(mark,5000);})();</script>`
+
 // Rewrite makes the panel page relative to its hosted URL, redirects its Lock
 // form to the dashboard, removes the retired notice, and injects the
 // per-session CSRF token plus the split-panel account default.
@@ -79,7 +102,7 @@ func Rewrite(page, csrf string) string {
 		}
 		return block
 	})
-	inject := `<meta name="gonuts-csrf" content="` + html.EscapeString(csrf) + `">` + csrfWrapper + autoAccountScript + imageFallbackScript
+	inject := `<meta name="gonuts-csrf" content="` + html.EscapeString(csrf) + `">` + pwaTags + csrfWrapper + offlineBadgeScript + autoAccountScript + imageFallbackScript
 	if i := indexFoldASCII(page, "<head>"); i >= 0 {
 		page = page[:i+len("<head>")] + inject + page[i+len("<head>"):]
 	} else {

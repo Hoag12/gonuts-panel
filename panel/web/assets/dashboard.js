@@ -1,7 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const CSRF = document.querySelector('meta[name="gonuts-csrf"]').content;
 let current = null, toastTimer = 0, countdown = 0;
-const inflight = new Set();
 let viewMode = localStorage.getItem('gonuts.viewMode') || 'split';
 let scope = localStorage.getItem('gonuts.scope') || 'all';
 
@@ -42,7 +41,7 @@ function ago(ms) {
 }
 function interval(v) { return v && v.h24 != null ? v.h24 : null; }
 function source(v) { return v && v.source ? v.source : 'booked'; }
-function stateClass(state) { return state === 'STOPPED' ? 'bad' : state === 'PAUSED' ? 'paused' : ''; }
+function stateClass(state) { return state === 'STOPPED' || state === 'OFFLINE' ? 'bad' : state === 'PAUSED' ? 'paused' : ''; }
 function row(label, value, full) {
   const d = el('div', 'kv' + (full ? ' full' : ''));
   d.append(el('dt', '', label), el('dd', '', value == null ? '—' : String(value)));
@@ -59,8 +58,9 @@ function card(inst) {
   const stateRow = el('div', 'state-row');
   stateRow.append(el('div', 'mascot face-' + (t.mascotFace || 'IDLE')));
   const stateBox = el('div');
-  const state = t.state || (inst.online ? 'UNKNOWN' : 'OFFLINE');
-  stateBox.append(el('div', 'state ' + stateClass(state), state + (t.detail ? ' · ' + t.detail : '')));
+  const state = inst.online ? (t.state || 'UNKNOWN') : 'OFFLINE';
+  const detail = inst.online && t.detail ? ' · ' + t.detail : '';
+  stateBox.append(el('div', 'state ' + stateClass(state), state + detail));
   stateBox.append(el('div', 'state-detail', t.lastAction ? 'last: ' + t.lastAction + ' · ' + ago(t.lastActionAt) : 'Waiting for activity'));
   stateRow.append(stateBox);
   article.append(stateRow);
@@ -72,35 +72,33 @@ function card(inst) {
   rows.append(row('profit 24h', t.profit && t.profit.h24 != null ? money(t.profit.h24) : '—'));
   rows.append(row('sales 1h / 24h', (t.sales && t.sales.h1 != null ? compact(t.sales.h1) : '—') + ' / ' + (t.sales && t.sales.h24 != null ? compact(t.sales.h24) : '—')));
   rows.append(row('purchases 24h', t.purchases && t.purchases.h24 != null ? compact(t.purchases.h24) : '—'));
-  rows.append(row('listings 24h', t.listings && t.listings.h24 != null ? compact(t.listings.h24) : '—'));
-  rows.append(row('reprices 24h', t.reprices && t.reprices.h24 != null ? compact(t.reprices.h24) : '—'));
-  rows.append(row('listed / slots', (t.listed == null ? '—' : t.listed) + ' / ' + (t.slots == null ? '—' : t.slots), true));
-  rows.append(row('trades (session)', t.trades == null ? '—' : t.trades, true));
+  rows.append(row('listings 1h', t.listings && t.listings.h1 != null ? compact(t.listings.h1) : '—'));
+  rows.append(row('reprices 1h', t.reprices && t.reprices.h1 != null ? compact(t.reprices.h1) : '—'));
+  rows.append(row('listed / slots', (t.listed == null ? '—' : t.listed) + ' / ' + (t.slots == null ? '—' : t.slots)));
+  rows.append(row('trades (session)', t.trades == null ? '—' : t.trades));
   rows.append(row('profit source', source(t.profit), true));
   article.append(rows);
 
-  const swarm = el('div', 'swarm');
-  swarm.append(el('span', 'tag', 'Swarm'));
-  const enabled = t.swarm && t.swarm.enabled;
-  swarm.append(el('span', enabled ? 'on' : 'off', enabled ? 'sharing market observations' : 'not sharing'));
-  swarm.append(el('span', '', '· guidance ' + (t.swarm && t.swarm.guidanceEnabled ? 'on' : 'off')));
-  swarm.append(el('span', '', '· ' + (t.swarm && t.swarm.eligible ? 'eligible' : 'not eligible')));
-  article.append(swarm);
+  if (t.swarm && t.swarm.enabled) {
+    const swarm = el('div', 'swarm');
+    swarm.append(el('span', 'tag', 'Swarm'));
+    swarm.append(el('span', 'on', 'sharing market observations'));
+    swarm.append(el('span', '', '· guidance ' + (t.swarm.guidanceEnabled ? 'on' : 'off')));
+    swarm.append(el('span', '', '· ' + (t.swarm.eligible ? 'eligible' : 'not eligible')));
+    article.append(swarm);
+  }
 
   const actions = el('div', 'actions');
-  const busy = inflight.has(inst.id);
   const open = el('button', 'btn gold', 'Open panel');
-  // New tab on purpose: the dashboard keeps streaming while the relayed panel loads.
-  open.onclick = () => window.open('/dashboard/panel/' + inst.id + '/', '_blank', 'noopener');
-  const paused = state === 'PAUSED';
-  const pause = el('button', 'btn' + (paused ? '' : ' gold'), 'Pause');
-  pause.disabled = !inst.online || busy;
+  open.onclick = () => { location.href = '/dashboard/panel/' + inst.id + '/'; };
+  const pause = el('button', 'btn', 'Pause');
+  pause.disabled = !inst.online || !(t.controls ? t.controls.pause : false);
   pause.onclick = () => command(inst.id, 'pause');
-  const resume = el('button', 'btn' + (paused ? ' gold' : ''), 'Resume');
-  resume.disabled = !inst.online || busy;
+  const resume = el('button', 'btn', 'Resume');
+  resume.disabled = !inst.online || !(t.controls ? t.controls.resume : false);
   resume.onclick = () => command(inst.id, 'resume');
-  const refresh = el('button', 'btn', busy ? 'Working…' : 'Refresh');
-  refresh.disabled = !inst.online || busy;
+  const refresh = el('button', 'btn', 'Refresh');
+  refresh.disabled = !inst.online;
   refresh.onclick = () => command(inst.id, 'snapshot');
   actions.append(open, pause, resume, refresh);
   article.append(actions);
@@ -136,6 +134,9 @@ function stat(label, value, note, cls) {
   d.append(el('span', 'label', label), el('b', '', value == null ? '—' : String(value)), el('small', '', note || ''));
   return d;
 }
+function rate(value) { return value == null ? null : (Math.round(value * 10) / 10).toFixed(1); }
+function perHourNote(value) { return value == null ? '' : ' · ' + money(value / 24) + '/h'; }
+function perHourCount(value) { return value == null ? '' : ' · ' + rate(value / 24) + '/h'; }
 function statElements(items) {
   const t = items.map(i => i.telemetry || {});
   const profit1 = total(t, x => x.profit?.h1), profit24 = total(t, x => x.profit?.h24);
@@ -144,12 +145,12 @@ function statElements(items) {
   const margin = profit24 != null && revenue24 != null && revenue24 > 0 ? (profit24 / revenue24 * 100).toFixed(1) + '%' : null;
   return [
     stat('Bank now', money(total(t, x => x.bank)), 'a balance, not profit', 'gold'),
-    stat('Profit last 24h', money(profit24), 'booked by your hive', 'good'),
-    stat('Sales records last 24h', compact(sales24), 'booked sales, not unique trades'),
+    stat('Profit last 24h', money(profit24), 'booked by your hive' + perHourNote(profit24), 'good'),
+    stat('Sales records last 24h', compact(sales24), 'booked sales, not unique trades' + perHourCount(sales24)),
     stat('Profit last hour', money(profit1), 'booked', 'good'),
     stat('Sales records last hour', compact(sales1), 'booked'),
     stat('Profit margin 24h', margin, 'profit / sales revenue'),
-    stat('Sales revenue last 24h', money(revenue24), 'gross booked sales'),
+    stat('Sales revenue last 24h', money(revenue24), 'gross booked sales' + perHourNote(revenue24)),
     stat('Sales revenue last hour', money(revenue1), 'gross booked sales')
   ];
 }
@@ -177,16 +178,25 @@ function renderHive(data) {
   $('hiveName').textContent = scope === 'all'
     ? all.length + ' account' + (all.length === 1 ? '' : 's') + ' · ' + all.filter(i => i.online).length + ' online'
     : (selected[0] ? selected[0].name : '—');
-  $('hiveScopeNote').textContent = scope === 'all' ? 'Controlling all accounts' : 'Controlling ' + (selected[0]?.name || 'account');
-  const listed = total(selected, i => i.telemetry?.listed);
-  const slots = total(selected, i => i.telemetry?.slots);
+  $('hiveScopeNote').textContent = scope === 'all'
+    ? (online.length === selected.length ? 'Controlling all accounts' : 'Controlling online accounts')
+    : 'Controlling ' + (selected[0]?.name || 'account');
+  const live = selected.filter(i => i.online);
+  const listed = total(live, i => i.telemetry?.listed);
+  const slots = total(live, i => i.telemetry?.slots);
   $('hiveSlots').textContent = listed == null && slots == null ? '—' : (listed == null ? '—' : listed) + ' / ' + (slots == null ? '—' : slots);
-  $('hiveBank').textContent = money(total(selected, i => i.telemetry?.bank));
-  $('hiveTrades').textContent = compact(total(selected, i => i.telemetry?.trades));
+  $('hiveBank').textContent = money(total(live, i => i.telemetry?.bank));
+  $('hiveTrades').textContent = compact(total(live, i => i.telemetry?.trades));
   $('hiveOnline').textContent = online.length + ' / ' + selected.length;
-  $('hiveStats').replaceChildren(...statElements(selected));
-  $('splitStats').replaceChildren(...statElements(all));
-  $('hiveNote').textContent = 'Hive totals · self-reported. Swarm ranking is not part of this self-hosted panel.';
+  $('hiveStats').replaceChildren(...statElements(live));
+  $('splitStats').replaceChildren(...statElements(all.filter(i => i.online)));
+  $('hiveNote').textContent = live.length
+    ? 'Hive totals · online accounts only · self-reported. Swarm ranking is not part of this self-hosted panel.'
+    : 'Hive totals · no online accounts.';
+  if ($('splitNote')) {
+    $('splitNote').hidden = viewMode !== 'split';
+    $('splitNote').textContent = live.length ? 'Hive totals · online accounts only · self-reported.' : 'Hive totals · no online accounts.';
+  }
   $('hivePause').disabled = !online.length;
   $('hiveResume').disabled = !online.length;
   $('hiveRefresh').disabled = !online.length;
@@ -214,41 +224,15 @@ async function load() {
   catch (e) { toast(e.message, true); }
 }
 async function commandMany(insts, cmd) {
-  // The mod decides whether a command applies; the dashboard only requires the
-  // client to be online, so stale telemetry control flags cannot wedge a button.
-  const targets = insts.filter(i => i.online && !inflight.has(i.id));
+  const targets = insts.filter(i => i.online);
   if (!targets.length) { toast('No online accounts', true); return; }
-  targets.forEach(i => inflight.add(i.id));
-  if (current) render(current);
   try {
     await Promise.all(targets.map(i => api('/dashboard/api/installations/' + i.id + '/command', {
       method: 'POST', body: JSON.stringify({ command: cmd })
     })));
     toast(cmd + ' sent to ' + targets.length + ' account' + (targets.length === 1 ? '' : 's'));
-    [600, 1600, 3200].forEach(d => setTimeout(load, d));
+    setTimeout(load, 400);
   } catch (e) { toast(e.message, true); }
-  finally {
-    setTimeout(() => {
-      targets.forEach(i => inflight.delete(i.id));
-      outcome(targets.map(i => i.id), cmd);
-    }, 3400);
-  }
-}
-async function outcome(ids, cmd) {
-  try {
-    const data = await api('/dashboard/api/state', { cache: 'no-store' });
-    current = data;
-    render(data);
-    for (const id of ids) {
-      const inst = (data.installations || []).find(i => i.id === id);
-      const lc = inst && inst.lastCommand;
-      if (lc && lc.command === cmd && lc.state === 'rejected') {
-        toast((inst.name || 'client') + ': ' + cmd + ' was rejected' +
-          (lc.reason ? ' · ' + lc.reason : ''), true);
-        return;
-      }
-    }
-  } catch (e) {}
 }
 function command(id, cmd) {
   const inst = current && current.installations.find(i => i.id === id);
@@ -275,7 +259,6 @@ async function linkClient() {
     $('code').textContent = p.code;
     $('modal').hidden = false;
     countdown = Math.max(0, Math.floor((p.expiresAt - Date.now()) / 1000));
-    $('copyCode').disabled = false;
     const tick = () => {
       if ($('modal').hidden) return;
       $('codeExpiry').textContent = countdown > 0 ? 'Expires in ' + Math.floor(countdown / 60) + ':' + String(countdown % 60).padStart(2, '0') : 'Code expired — create a new one';
@@ -286,9 +269,28 @@ async function linkClient() {
 }
 $('scope').addEventListener('change', e => { scope = e.target.value; localStorage.setItem('gonuts.scope', scope); if (current) render(current); });
 $('linkClient').onclick = linkClient;
-$('newCode').onclick = linkClient;
-$('closeModal').onclick = () => { $('modal').hidden = true; countdown = 0; load(); };
+$('closeModal').onclick = () => { $('modal').hidden = true; load(); };
 $('copyCode').onclick = async () => { try { await navigator.clipboard.writeText($('code').textContent); toast('Copied'); } catch (e) { toast('Copy failed', true); } };
+
+// Keep same-origin navigation inside the installed app window instead of
+// handing it to Safari. External links keep their default behaviour.
+document.addEventListener('click', e => {
+  const a = e.target.closest && e.target.closest('a[href]');
+  if (!a) return;
+  const url = new URL(a.href, location.href);
+  if (url.origin !== location.origin) return;
+  if (!a.target || a.target === '_self') return;
+  e.preventDefault();
+  location.href = url.href;
+});
+
+// Refresh data in place (no full reload) when the browser chrome is hidden on
+// the iPhone home screen.
+const refreshFab = $('refreshFab');
+if (refreshFab) refreshFab.onclick = async () => {
+  refreshFab.setAttribute('aria-busy', 'true');
+  try { await load(); toast('Refreshed'); } finally { refreshFab.removeAttribute('aria-busy'); }
+};
 
 let sse = null;
 function connect() {

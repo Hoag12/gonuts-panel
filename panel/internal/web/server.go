@@ -107,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", pageRedirect("/dashboard"))
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /dashboard", s.dashboardPage)
+	mux.HandleFunc("GET /manifest.json", s.manifest)
 	mux.HandleFunc("GET /auth/login", s.authLogin)
 	mux.HandleFunc("GET /auth/callback", s.authCallback)
 	mux.HandleFunc("POST /auth/local", s.authLocal)
@@ -329,6 +330,18 @@ func (s *Server) dashboardPage(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("Cache-Control", "no-store")
+	_, _ = w.Write(b)
+}
+
+// manifest serves the web app manifest for the installed (standalone) dashboard.
+func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
+	b, err := webassets.FS.ReadFile("manifest.json")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
 	_, _ = w.Write(b)
 }
 
