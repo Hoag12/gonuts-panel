@@ -2830,3 +2830,45 @@ func TestAuthDisabledAutoLogin(t *testing.T) {
 		t.Fatalf("state status=%d body=%s", rec.Code, rec.Body)
 	}
 }
+
+func TestCanonicalHostRedirectsAliasDomains(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	s := New(config.Config{
+		PublicBaseURL: "https://gonuts.cyou",
+		ExtraOrigins: []string{
+			"https://vanillavn.xyz",
+			"https://www.vanillavn.xyz",
+			"https://gonuts-panel.onrender.com",
+		},
+	}, st, nil, nil)
+	handler := s.Handler()
+	serve := func(method, target, host string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, target, nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	for _, alias := range []string{"vanillavn.xyz", "www.vanillavn.xyz", "gonuts-panel.onrender.com"} {
+		rec := serve("GET", "/dashboard", alias)
+		if rec.Code != http.StatusPermanentRedirect || rec.Header().Get("Location") != "https://gonuts.cyou/dashboard" {
+			t.Fatalf("alias %s status=%d location=%q", alias, rec.Code, rec.Header().Get("Location"))
+		}
+	}
+	if rec := serve("GET", "/dashboard", "gonuts.cyou"); rec.Code == http.StatusPermanentRedirect {
+		t.Fatal("canonical host must not redirect")
+	}
+	if rec := serve("GET", "/healthz", "vanillavn.xyz"); rec.Code != http.StatusOK {
+		t.Fatalf("health alias status=%d", rec.Code)
+	}
+	if rec := serve("POST", "/dashboard/api/pair/redeem", "vanillavn.xyz"); rec.Code == http.StatusPermanentRedirect {
+		t.Fatal("pairing transport must not redirect")
+	}
+	if rec := serve("GET", "/dashboard", "unlisted.example"); rec.Code == http.StatusPermanentRedirect {
+		t.Fatal("unknown host must not redirect")
+	}
+}

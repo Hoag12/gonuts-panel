@@ -163,7 +163,58 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /dashboard/panel/{id}/{path...}", s.panelGet)
 	mux.HandleFunc("POST /dashboard/panel/{id}/{path...}", s.panelPost)
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(webassets.Assets))))
-	return s.middleware(mux)
+	return s.middleware(s.canonicalHost(mux))
+}
+
+// canonicalHost sends visitors arriving on an alias domain to the public base
+// URL, so one browser session and one dashboard cover every attached domain.
+// Client transports (pairing, bearer check, WebSocket), the health probe and
+// unknown hosts keep answering as before.
+func (s *Server) canonicalHost(next http.Handler) http.Handler {
+	base, err := url.Parse(s.Cfg.PublicBaseURL)
+	if err != nil || base.Host == "" || base.Scheme == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if strings.EqualFold(host, base.Hostname()) || hostExempt(r) || !s.aliasHost(host) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Redirect(w, r, base.Scheme+"://"+base.Host+r.URL.RequestURI(), http.StatusPermanentRedirect)
+	})
+}
+
+// aliasHost reports whether host is one of the configured extra origins.
+func (s *Server) aliasHost(host string) bool {
+	for _, raw := range s.Cfg.ExtraOrigins {
+		u, err := url.Parse(raw)
+		if err != nil || u.Hostname() == "" {
+			continue
+		}
+		if strings.EqualFold(u.Hostname(), host) {
+			return true
+		}
+	}
+	return false
+}
+
+func hostExempt(r *http.Request) bool {
+	if r.URL.Path == "/healthz" {
+		return true
+	}
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return true
+	}
+	for _, prefix := range []string{"/dashboard/ws/", "/dashboard/api/pair/", "/dashboard/api/client/"} {
+		if strings.HasPrefix(r.URL.Path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // middleware sets the baseline security headers on every response and turns a
