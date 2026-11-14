@@ -142,6 +142,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", pageRedirect("/dashboard"))
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /dashboard", s.dashboardPage)
+	mux.HandleFunc("GET /dashboard/", pageRedirect("/dashboard"))
 	mux.HandleFunc("GET /manifest.json", s.manifest)
 	mux.HandleFunc("GET /auth/login", s.authLogin)
 	mux.HandleFunc("GET /auth/callback", s.authCallback)
