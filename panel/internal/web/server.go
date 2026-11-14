@@ -21,6 +21,7 @@ import (
 	"gonutspanel/internal/config"
 	"gonutspanel/internal/relay"
 	"gonutspanel/internal/store"
+	"gonutspanel/internal/swarm"
 	webassets "gonutspanel/web"
 )
 
@@ -69,6 +70,8 @@ type Server struct {
 	CommandLimiter *limiter
 	SSE            *sseHub
 	PanelCache     *panelCache
+	// Swarm stores public market observations shared by linked hives.
+	Swarm *swarm.Hub
 }
 
 // New builds a Server. A nil hub is replaced by an offline no-op so auth and
@@ -89,6 +92,7 @@ func New(cfg config.Config, st *store.Store, hub Relay, d *auth.Discord) *Server
 		CommandLimiter: newLimiter(60, 60),
 		SSE:            newSSEHub(5),
 		PanelCache:     newPanelCache(cfg.PanelCacheBytes),
+		Swarm:          swarm.New(),
 	}
 }
 
@@ -159,6 +163,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /dashboard/api/pair/redeem", s.apiRedeem)
 	mux.HandleFunc("POST /dashboard/api/client/check", s.apiCheck)
 	mux.HandleFunc("GET /dashboard/ws/client", s.Hub.ServeWS)
+	mux.HandleFunc("GET /community/v1/capabilities", s.swarmCapabilities)
+	mux.HandleFunc("POST /community/v1/enroll", s.swarmEnroll)
+	mux.HandleFunc("PUT /community/v1/me/accounts", s.swarmAccounts)
+	mux.HandleFunc("GET /community/v1/me", s.swarmMe)
+	mux.HandleFunc("POST /community/v1/observations", s.swarmObservations)
+	mux.HandleFunc("GET /community/v1/market", s.swarmMarketBatch)
+	mux.HandleFunc("GET /community/v1/market/{key}", s.swarmMarket)
+	mux.HandleFunc("GET /community/v1/sales/history", s.swarmHistory)
+	mux.HandleFunc("POST /community/v1/unenroll", s.swarmUnenroll)
 	mux.HandleFunc("GET /dashboard/panel/{id}/{$}", s.panelPage)
 	mux.HandleFunc("GET /dashboard/panel/{id}/{path...}", s.panelGet)
 	mux.HandleFunc("POST /dashboard/panel/{id}/{path...}", s.panelPost)
@@ -209,7 +222,7 @@ func hostExempt(r *http.Request) bool {
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		return true
 	}
-	for _, prefix := range []string{"/dashboard/ws/", "/dashboard/api/pair/", "/dashboard/api/client/"} {
+	for _, prefix := range []string{"/dashboard/ws/", "/dashboard/api/pair/", "/dashboard/api/client/", "/community/"} {
 		if strings.HasPrefix(r.URL.Path, prefix) {
 			return true
 		}
