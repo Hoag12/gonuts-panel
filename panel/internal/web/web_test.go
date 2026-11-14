@@ -377,8 +377,11 @@ func TestDashboardShellCarriesSessionCSRF(t *testing.T) {
 	if !strings.Contains(page, `<meta name="gonuts-csrf" content="`+csrf+`">`) {
 		t.Fatalf("dashboard does not carry the session CSRF: %s", page)
 	}
-	if strings.Contains(page, "/auth/logout") {
-		t.Fatal("dashboard still offers a sign-out form")
+	if !strings.Contains(page, `action="/auth/logout"`) {
+		t.Fatal("dashboard does not offer a sign-out form")
+	}
+	if !strings.Contains(page, `<input type="hidden" name="csrf" value="`+csrf+`">`) {
+		t.Fatal("sign-out form does not carry the session CSRF")
 	}
 	if !strings.Contains(page, `<a class="brand" href="/dashboard"`) {
 		t.Fatal("dashboard logo does not link back to the dashboard")

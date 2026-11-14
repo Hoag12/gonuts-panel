@@ -29,14 +29,14 @@
     </div>
     <button class="btn" id="maskNames" type="button" aria-pressed="false" title="Hide account names">Hide names</button>
     <button class="btn gold" id="linkClient">Link client</button>
+    <form method="post" action="/auth/logout">
+      <input type="hidden" name="csrf" value="{{CSRF}}">
+      <button class="btn ghost">Sign out</button>
+    </form>
     <span id="who" class="who"></span>
   </div>
 </header>
 <main>
-  <section id="accounts" class="panel accounts" hidden>
-    <h2 class="title">Accounts</h2>
-    <div id="accountRows" class="accounts-body"></div>
-  </section>
   <section id="empty" class="empty panel" hidden>
     <h2>No clients linked yet</h2>
     <p>Choose <strong>Link client</strong>, then enter the code in GoNuts → Dashboard → Link with code.</p>

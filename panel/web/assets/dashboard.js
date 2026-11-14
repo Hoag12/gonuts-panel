@@ -210,29 +210,6 @@ function renderHive(data) {
     b.onclick = () => { viewMode = b.dataset.view; localStorage.setItem('gonuts.viewMode', viewMode); if (current) render(current); };
   });
 }
-function renderAccounts(all) {
-  const panel = $('accounts');
-  if (!panel) return;
-  const rows = $('accountRows');
-  if (!all.length) { panel.hidden = true; rows.replaceChildren(); return; }
-  panel.hidden = false;
-  const nodes = [];
-  all.forEach((inst, i) => {
-    const row = el('div', 'acc-row');
-    row.append(el('span', 'acc-name', displayName(inst, i)));
-    row.append(el('span', 'acc-state', inst.online ? 'online' : 'offline'));
-    const acts = el('div', 'acc-actions');
-    const ren = el('button', '', 'Rename');
-    ren.onclick = () => renameInst(inst);
-    const unl = el('button', '', 'Unlink');
-    unl.onclick = () => unlinkInst(inst);
-    acts.append(ren, unl);
-    row.append(acts);
-    nodes.push(row);
-  });
-  rows.replaceChildren(...nodes);
-}
-
 function render(data) {
   current = data;
   $('who').textContent = data.user.globalName || data.user.username || '';
@@ -242,7 +219,6 @@ function render(data) {
   cards.hidden = !showCards || !all.length;
   cards.replaceChildren(...(showCards ? all.map((inst, i) => card(inst, i)) : []));
   $('empty').hidden = all.length > 0;
-  renderAccounts(all);
   renderHive(data);
 }
 async function load() {
