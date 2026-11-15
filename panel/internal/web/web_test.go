@@ -1885,7 +1885,8 @@ func TestOAuthLoginAndCallback(t *testing.T) {
 		q.Get("client_id") != "cid" || q.Get("scope") != "identify" {
 		t.Fatalf("authorize url=%q", loc)
 	}
-	verifier := s.States.m[state].verifier
+	entry, _ := st.PeekOAuthState(state)
+	verifier := entry.Verifier
 	if verifier == "" || !auth.VerifyPKCE(verifier, challenge) {
 		t.Fatal("server-side verifier does not match the challenge")
 	}
@@ -1964,7 +1965,7 @@ func TestOAuthCallbackRejectsBadState(t *testing.T) {
 
 	// A cancelled sign-in is reported after the state is validated.
 	state, _ := auth.RandomToken(24)
-	s.States.put(state, "verifier", time.Minute)
+	st.PutOAuthState(state, "verifier", time.Now().Add(time.Minute).UnixMilli())
 	req := httptest.NewRequest("GET", "/auth/callback?state="+url.QueryEscape(state)+"&error=access_denied", nil)
 	req.AddCookie(&http.Cookie{Name: auth.OAuthCookie, Value: state})
 	rec := httptest.NewRecorder()
@@ -1972,7 +1973,7 @@ func TestOAuthCallbackRejectsBadState(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "cancelled") {
 		t.Fatalf("cancelled status=%d body=%s", rec.Code, rec.Body)
 	}
-	if _, ok := s.States.take(state); ok {
+	if _, ok := st.PeekOAuthState(state); ok {
 		t.Fatal("state was not consumed by the callback")
 	}
 }

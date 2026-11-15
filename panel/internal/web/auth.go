@@ -93,7 +93,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign-in unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.States.put(state, verifier, oauthStateTTL)
+	s.Store.PutOAuthState(state, verifier, time.Now().Add(oauthStateTTL).UnixMilli())
 	auth.SetOAuthCookie(w, state, s.Cfg.CookieSecure)
 	http.Redirect(w, r, s.Discord.AuthorizeURLFor(state, auth.Challenge(verifier)), http.StatusFound)
 }
@@ -122,7 +122,7 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid sign-in state", http.StatusBadRequest)
 		return
 	}
-	verifier, ok := s.States.take(cookieState)
+	verifier, ok := s.Store.TakeOAuthState(cookieState, time.Now())
 	if !ok {
 		http.Error(w, "sign-in expired", http.StatusBadRequest)
 		return

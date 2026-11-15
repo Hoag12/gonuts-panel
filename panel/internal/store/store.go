@@ -141,7 +141,14 @@ type State struct {
 	Codes              map[string]*Code         `json:"codes"`
 	Installations      map[string]*Installation `json:"installations"`
 	Commands           map[string]*Command      `json:"commands"`
+	OAuth              map[string]OAuthState    `json:"oauthStates,omitempty"`
 	NextInstallationID int64                    `json:"nextInstallationId"`
+}
+
+// OAuthState is one in-flight authorization-code sign-in.
+type OAuthState struct {
+	Verifier  string `json:"verifier"`
+	ExpiresAt int64  `json:"expiresAt"`
 }
 
 // Store serialises access to one state file. All methods are safe for
@@ -303,6 +310,41 @@ func (s *Store) Close() error {
 		}
 	}
 	return err
+}
+
+// PutOAuthState records an in-flight sign-in so any instance can finish it.
+func (s *Store) PutOAuthState(state, verifier string, expiresAt int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.OAuth == nil {
+		s.data.OAuth = map[string]OAuthState{}
+	}
+	s.data.OAuth[state] = OAuthState{Verifier: verifier, ExpiresAt: expiresAt}
+	_ = s.saveLocked()
+}
+
+// PeekOAuthState reads a sign-in state without consuming it.
+func (s *Store) PeekOAuthState(state string) (OAuthState, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.data.OAuth[state]
+	return entry, ok
+}
+
+// TakeOAuthState consumes a sign-in state and reports whether it was fresh.
+func (s *Store) TakeOAuthState(state string, now time.Time) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.data.OAuth[state]
+	if !ok {
+		return "", false
+	}
+	delete(s.data.OAuth, state)
+	_ = s.saveLocked()
+	if entry.ExpiresAt <= now.UnixMilli() {
+		return "", false
+	}
+	return entry.Verifier, true
 }
 
 // CreateSession returns a new session token (stored hashed) and the CSRF token
@@ -852,6 +894,9 @@ func (st *State) ensure() {
 	if st.Commands == nil {
 		st.Commands = map[string]*Command{}
 	}
+	if st.OAuth == nil {
+		st.OAuth = map[string]OAuthState{}
+	}
 	for k, v := range st.Users {
 		if v == nil {
 			delete(st.Users, k)
@@ -908,6 +953,12 @@ func (st *State) prune(now time.Time) bool {
 	for k, c := range st.Codes {
 		if c == nil || c.ExpiresAt <= nowMS {
 			delete(st.Codes, k)
+			changed = true
+		}
+	}
+	for k, entry := range st.OAuth {
+		if entry.ExpiresAt <= nowMS {
+			delete(st.OAuth, k)
 			changed = true
 		}
 	}
