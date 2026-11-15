@@ -40,6 +40,9 @@ type Config struct {
 	LocalPassword string
 	// LocalUser is the account id and display name local sign-in creates.
 	LocalUser string
+	// RemoteStateURL is a PostgreSQL URL used to mirror panel state so
+	// accounts and sessions survive a redeploy on ephemeral hosting.
+	RemoteStateURL string
 	// HideLocalLogin keeps the local password endpoint available for
 	// automation (the bridge signs in with it) while the login page offers
 	// only Discord.
@@ -84,6 +87,7 @@ func Load() (Config, error) {
 		// hash generator uses the exact bytes the operator typed.
 		LocalPassword:  os.Getenv("GONUTS_LOCAL_PASSWORD"),
 		LocalUser:      env("GONUTS_LOCAL_USER", "local"),
+		RemoteStateURL: strings.TrimSpace(os.Getenv("GONUTS_REMOTE_STATE_URL")),
 		AuthDisabled:   boolEnv("GONUTS_AUTH_DISABLED", false),
 		AllowUnauthLAN: boolEnv("GONUTS_ALLOW_UNAUTH_LAN", false),
 	}

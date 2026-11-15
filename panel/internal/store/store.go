@@ -153,18 +153,63 @@ type Store struct {
 	data   State
 	dirty  bool
 	closed bool
+
+	// sink mirrors every save to durable storage outside the ephemeral disk.
+	sink       Sink
+	mirrorCh   chan []byte
+	mirrorDone chan struct{}
+}
+
+// Sink is durable storage outside the panel's ephemeral data directory.
+type Sink interface {
+	LoadState() ([]byte, bool, error)
+	SaveState([]byte) error
+	Close() error
 }
 
 // Open loads (or creates) the state file in dir. A file that exists but does
 // not decode is reported as an error and left untouched; it is never reset.
 func Open(dir string) (*Store, error) {
+	return open(dir, nil)
+}
+
+// OpenWithSink opens the state directory and prefers the snapshot held by
+// sink, so accounts and sessions survive a redeploy that resets the disk.
+// Every later save is mirrored to sink in the background.
+func OpenWithSink(dir string, sink Sink) (*Store, error) {
+	if sink == nil {
+		return Open(dir)
+	}
+	return open(dir, sink)
+}
+
+func open(dir string, sink Sink) (*Store, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, errors.New("store: data directory is required")
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, path: filepath.Join(dir, stateFileName)}
+	s := &Store{dir: dir, path: filepath.Join(dir, stateFileName), sink: sink}
+	loadedRemote := false
+	if sink != nil {
+		s.startMirror()
+		if body, ok, err := sink.LoadState(); err == nil && ok {
+			var remote State
+			if json.Unmarshal(body, &remote) == nil {
+				remote.ensure()
+				s.data = remote
+				if s.data.prune(time.Now()) {
+					s.dirty = true
+				}
+				loadedRemote = true
+				if err := s.saveLocked(); err != nil {
+					return nil, err
+				}
+				return s, nil
+			}
+		}
+	}
 	b, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		s.data = newState()
@@ -183,10 +228,52 @@ func Open(dir string) (*Store, error) {
 	if s.data.prune(time.Now()) {
 		s.dirty = true
 	}
+	if sink != nil && !loadedRemote {
+		if err := s.saveLocked(); err != nil {
+			return nil, err
+		}
+		if body, err := json.MarshalIndent(s.data, "", "  "); err == nil {
+			_ = sink.SaveState(append(body, '\n'))
+		}
+	}
 	return s, nil
 }
 
 // SaveNow writes the current state to disk.
+// startMirror starts the single background writer that coalesces saves.
+func (s *Store) startMirror() {
+	s.mirrorCh = make(chan []byte, 1)
+	s.mirrorDone = make(chan struct{})
+	go func() {
+		defer close(s.mirrorDone)
+		for body := range s.mirrorCh {
+			_ = s.sink.SaveState(body)
+		}
+	}()
+}
+
+// mirrorLocked hands the newest snapshot to the writer, replacing any pending
+// copy so a burst of telemetry writes cannot queue up.
+func (s *Store) mirrorLocked(body []byte) {
+	if s.sink == nil || s.mirrorCh == nil {
+		return
+	}
+	payload := append([]byte(nil), body...)
+	select {
+	case s.mirrorCh <- payload:
+		return
+	default:
+	}
+	select {
+	case <-s.mirrorCh:
+	default:
+	}
+	select {
+	case s.mirrorCh <- payload:
+	default:
+	}
+}
+
 func (s *Store) SaveNow() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -202,10 +289,20 @@ func (s *Store) Close() error {
 		return nil
 	}
 	s.closed = true
+	var err error
 	if s.dirty {
-		return s.saveLocked()
+		err = s.saveLocked()
 	}
-	return nil
+	if s.mirrorCh != nil {
+		close(s.mirrorCh)
+		<-s.mirrorDone
+		s.mirrorCh = nil
+		if s.sink != nil {
+			_ = s.sink.Close()
+			s.sink = nil
+		}
+	}
+	return err
 }
 
 // CreateSession returns a new session token (stored hashed) and the CSRF token
@@ -714,6 +811,7 @@ func (s *Store) saveLocked() error {
 		_ = d.Close()
 	}
 	s.dirty = false
+	s.mirrorLocked(b)
 	return nil
 }
 

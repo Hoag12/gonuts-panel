@@ -47,7 +47,18 @@ func main() {
 	if cfg.LocalPasswordHash != "" && !auth.ValidPasswordHash(cfg.LocalPasswordHash) {
 		log.Fatal("gonuts-panel: GONUTS_LOCAL_PASSWORD_HASH is malformed; regenerate it with -hash-password")
 	}
-	st, err := store.Open(cfg.DataDir)
+	var st *store.Store
+	if cfg.RemoteStateURL != "" {
+		sink, sinkErr := store.NewPostgresSink(cfg.RemoteStateURL)
+		if sinkErr != nil {
+			log.Printf("remote state unavailable, using local disk only: %v", sinkErr)
+			st, err = store.Open(cfg.DataDir)
+		} else {
+			st, err = store.OpenWithSink(cfg.DataDir, sink)
+		}
+	} else {
+		st, err = store.Open(cfg.DataDir)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
