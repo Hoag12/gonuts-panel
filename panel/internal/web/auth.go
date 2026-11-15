@@ -300,7 +300,14 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 		token = r.PostForm.Get("csrf")
 	}
 	if !auth.Equal(token, sess.CSRF) || !s.originAllowed(r) {
-		http.Error(w, "invalid request origin or token", http.StatusForbidden)
+		// Never strand a visitor on an error page. A stale form token from a
+		// same-origin page still means the person asked to sign out, so end
+		// the session; a foreign origin only loses the local cookie.
+		if s.originAllowed(r) {
+			_ = s.Store.DeleteSession(auth.CookieToken(r))
+		}
+		auth.ClearSessionCookie(w, s.Cfg.CookieSecure)
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 		return
 	}
 	_ = s.Store.DeleteSession(auth.CookieToken(r))

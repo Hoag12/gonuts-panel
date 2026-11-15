@@ -2096,17 +2096,25 @@ func TestLogoutRequiresCSRFAndOrigin(t *testing.T) {
 	}
 
 	token, csrf := newSession()
-	if rec := logout(token, "", "", "https://panel.example.com"); rec.Code != http.StatusForbidden {
-		t.Fatalf("missing token status=%d", rec.Code)
+	if rec := logout(token, "", "", "https://panel.example.com"); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("missing token status=%d location=%q", rec.Code, rec.Header().Get("Location"))
 	}
-	if rec := logout(token, "wrong", "", "https://panel.example.com"); rec.Code != http.StatusForbidden {
+	if _, ok := st.Session(token, time.Now()); ok {
+		t.Fatal("stale-token logout left the session valid")
+	}
+	token, csrf = newSession()
+	if rec := logout(token, "wrong", "", "https://panel.example.com"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("mismatched token status=%d", rec.Code)
 	}
-	if rec := logout(token, csrf, "", ""); rec.Code != http.StatusForbidden {
+	if _, ok := st.Session(token, time.Now()); ok {
+		t.Fatal("mismatched-token logout left the session valid")
+	}
+	token, csrf = newSession()
+	if rec := logout(token, csrf, "", ""); rec.Code != http.StatusSeeOther {
 		t.Fatalf("missing origin status=%d", rec.Code)
 	}
 	if _, ok := st.Session(token, time.Now()); !ok {
-		t.Fatal("a refused logout revoked the session")
+		t.Fatal("a foreign-origin logout revoked the session")
 	}
 
 	rec := logout(token, csrf, "", "https://panel.example.com")

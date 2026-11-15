@@ -153,6 +153,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /auth/local", pageRedirect("/dashboard"))
 	mux.HandleFunc("POST /auth/local", s.authLocal)
 	mux.HandleFunc("POST /auth/logout", s.authLogout)
+	mux.HandleFunc("GET /auth/logout", pageRedirect("/dashboard"))
 	mux.HandleFunc("GET /auth/dev", s.authDev)
 	mux.HandleFunc("GET /dashboard/api/state", s.apiState)
 	mux.HandleFunc("POST /dashboard/api/pair/code", s.apiPairCode)
