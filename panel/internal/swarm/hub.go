@@ -4,12 +4,16 @@
 package swarm
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -50,12 +54,6 @@ func ValidKey(key string) bool { return keyPattern.MatchString(key) }
 // ValidAccount reports whether name is an acceptable observer account.
 func ValidAccount(name string) bool { return accountFormat.MatchString(name) }
 
-type credential struct {
-	installationID int64
-	discordID      string
-	accounts       []string
-}
-
 type level struct {
 	Unit int64
 	At   int64
@@ -73,26 +71,66 @@ type sale struct {
 	At       int64
 }
 
-// Hub is the in-memory shared store. Entries expire on their own so a restart
-// only loses recent contributions; hives upload continuously.
+// Hub is the in-memory shared store. Observations expire on their own, while
+// community credentials are stateless HMACs keyed by the installation id, so a
+// redeploy never invalidates enrollment.
 type Hub struct {
-	mu             sync.Mutex
-	creds          map[string]*credential // sha256(credential) -> owner
-	byInstallation map[int64]string       // installation id -> credential hash
-	idempotency    map[string]int64
-	markets        map[string]*marketLevels
-	sales          map[string][]sale
+	mu          sync.Mutex
+	secret      []byte
+	idempotency map[string]int64
+	markets     map[string]*marketLevels
+	sales       map[string][]sale
 }
 
-// New returns an empty hub.
+// New returns a hub with a random secret (tests only).
 func New() *Hub {
-	return &Hub{
-		creds:          map[string]*credential{},
-		byInstallation: map[int64]string{},
-		idempotency:    map[string]int64{},
-		markets:        map[string]*marketLevels{},
-		sales:          map[string][]sale{},
+	buf := make([]byte, 32)
+	_, _ = rand.Read(buf)
+	return NewWithSecret(buf)
+}
+
+// NewWithSecret returns a hub whose credentials survive restarts.
+func NewWithSecret(secret []byte) *Hub {
+	if len(secret) == 0 {
+		return New()
 	}
+	return &Hub{
+		secret:      append([]byte(nil), secret...),
+		idempotency: map[string]int64{},
+		markets:     map[string]*marketLevels{},
+		sales:       map[string][]sale{},
+	}
+}
+
+const credentialPrefix = "gnc1_"
+
+func (h *Hub) signature(id int64) string {
+	mac := hmac.New(sha256.New, h.secret)
+	fmt.Fprintf(mac, "community-credential|%d", id)
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:24])
+}
+
+func (h *Hub) issue(id int64) string {
+	padded := strconv.FormatInt(id, 36)
+	for len(padded) < 10 {
+		padded = "0" + padded
+	}
+	return credentialPrefix + padded + "-" + h.signature(id)
+}
+
+func (h *Hub) authenticate(token string) (int64, bool) {
+	if !strings.HasPrefix(token, credentialPrefix) {
+		return 0, false
+	}
+	rest := strings.TrimPrefix(token, credentialPrefix)
+	if len(rest) != 43 || rest[10] != '-' {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(rest[:10], 36, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, hmac.Equal([]byte(rest[11:]), []byte(h.signature(id)))
 }
 
 func (h *Hub) pruneLocked(now time.Time) {
@@ -140,94 +178,41 @@ func trimLevels(rows []level, cutoff int64) []level {
 	return kept
 }
 
-// Enroll issues a community credential for a linked installation.
+// Enroll issues the installation's stateless community credential.
 func (h *Hub) Enroll(installationID int64, discordID string, accounts []string) (string, string, error) {
-	secret, err := randomToken(32)
-	if err != nil {
-		return "", "", err
+	if installationID <= 0 {
+		return "", "", fmt.Errorf("invalid installation")
 	}
-	credit, err := randomToken(9)
-	if err != nil {
-		return "", "", err
-	}
-	value := "gnc1_" + secret
-	contributor := "c_" + credit
-	clean := sanitizeAccounts(accounts)
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if previous, ok := h.byInstallation[installationID]; ok {
-		delete(h.creds, previous)
-	}
-	hash := hashToken(value)
-	h.creds[hash] = &credential{installationID: installationID, discordID: discordID, accounts: clean}
-	h.byInstallation[installationID] = hash
-	return value, contributor, nil
+	mac := hmac.New(sha256.New, h.secret)
+	fmt.Fprintf(mac, "community-contributor|%d", installationID)
+	contributor := "c_" + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:9])
+	return h.issue(installationID), contributor, nil
 }
 
-// Authenticate resolves a community credential.
+// Authenticate resolves a stateless community credential.
 func (h *Hub) Authenticate(token string) (installationID int64, accounts []string, ok bool) {
-	if token == "" {
-		return 0, nil, false
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	c, found := h.creds[hashToken(token)]
-	if !found {
-		return 0, nil, false
-	}
-	return c.installationID, append([]string(nil), c.accounts...), true
+	id, ok := h.authenticate(token)
+	return id, nil, ok
 }
 
-// RegisterAccounts replaces the observer accounts for a credential.
+// RegisterAccounts accepts the observer list for a valid credential.
 func (h *Hub) RegisterAccounts(token string, accounts []string) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	c, found := h.creds[hashToken(token)]
-	if !found {
-		return false
-	}
-	c.accounts = sanitizeAccounts(accounts)
-	return true
+	_, ok := h.authenticate(token)
+	return ok
 }
 
-// Unenroll forgets a community credential.
+// Unenroll accepts a valid credential; the client drops its own copy.
 func (h *Hub) Unenroll(token string) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	hash := hashToken(token)
-	c, found := h.creds[hash]
-	if !found {
-		return false
-	}
-	delete(h.creds, hash)
-	if h.byInstallation[c.installationID] == hash {
-		delete(h.byInstallation, c.installationID)
-	}
-	return true
-}
-
-func sanitizeAccounts(accounts []string) []string {
-	out := make([]string, 0, len(accounts))
-	seen := map[string]bool{}
-	for _, name := range accounts {
-		if ValidAccount(name) && !seen[name] {
-			out = append(out, name)
-			seen[name] = true
-		}
-		if len(out) >= 8 {
-			break
-		}
-	}
-	return out
+	_, ok := h.authenticate(token)
+	return ok
 }
 
 // Observe accepts one upload batch. It returns the accepted count, whether the
 // idempotency key was already seen, and whether the credential was valid.
 func (h *Hub) Observe(token, idempotencyKey string, records []Observation, now time.Time) (int, bool, bool) {
-	hash := hashToken(token)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if _, found := h.creds[hash]; !found {
+	if _, ok := h.authenticate(token); !ok {
 		return 0, false, false
 	}
 	if idempotencyKey != "" {

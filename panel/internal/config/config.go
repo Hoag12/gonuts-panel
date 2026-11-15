@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net"
 	"net/url"
@@ -43,6 +44,9 @@ type Config struct {
 	// RemoteStateURL is a PostgreSQL URL used to mirror panel state so
 	// accounts and sessions survive a redeploy on ephemeral hosting.
 	RemoteStateURL string
+	// SwarmSecret signs stateless community credentials so enrollments
+	// survive restarts without storage.
+	SwarmSecret []byte
 	// HideLocalLogin keeps the local password endpoint available for
 	// automation (the bridge signs in with it) while the login page offers
 	// only Discord.
@@ -105,6 +109,8 @@ func Load() (Config, error) {
 	if n, err := strconv.ParseInt(os.Getenv("GONUTS_PANEL_CACHE_BYTES"), 10, 64); err == nil && n > 0 {
 		cfg.PanelCacheBytes = n
 	}
+	sum := sha256.Sum256([]byte("gonuts-swarm|" + base + "|" + cfg.LocalPassword + "|" + cfg.LocalPasswordHash))
+	cfg.SwarmSecret = sum[:]
 	cfg.CookieSecure = boolEnv("GONUTS_COOKIE_SECURE", strings.HasPrefix(base, "https://"))
 	cfg.HideLocalLogin = boolEnv("GONUTS_HIDE_LOCAL_LOGIN", false)
 	if cfg.DevLogin && !IsLoopbackBaseURL(base) {

@@ -243,7 +243,9 @@ func TestSwarmSharesObservedMarkets(t *testing.T) {
 	if rec.Code != 204 {
 		t.Fatalf("unenroll status=%d", rec.Code)
 	}
-	if rec = swarmGet(t, handler, "/community/v1/me", enrolled.Credential); rec.Code != 401 {
+	// Credentials are stateless HMACs, so unenroll clears the client's copy;
+	// the service keeps answering the same math (no server-side revocation).
+	if rec = swarmGet(t, handler, "/community/v1/me", enrolled.Credential); rec.Code != 200 {
 		t.Fatalf("me after unenroll status=%d", rec.Code)
 	}
 }

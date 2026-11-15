@@ -92,7 +92,7 @@ func New(cfg config.Config, st *store.Store, hub Relay, d *auth.Discord) *Server
 		CommandLimiter: newLimiter(60, 60),
 		SSE:            newSSEHub(5),
 		PanelCache:     newPanelCache(cfg.PanelCacheBytes),
-		Swarm:          swarm.New(),
+		Swarm:          swarm.NewWithSecret(cfg.SwarmSecret),
 	}
 }
 
