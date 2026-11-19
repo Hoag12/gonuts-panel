@@ -41,8 +41,9 @@ main { max-width:1180px; margin:0 auto; padding:6px 20px 40px; }
 .state-detail { color:var(--secondary); font-size:12px; margin-top:2px; }
 .rows { display:grid; grid-template-columns:1fr 1fr; gap:2px 16px; border-top:1px solid var(--edge); padding-top:8px; }
 .kv { display:flex; justify-content:space-between; gap:8px; min-width:0; }
-.kv dt { color:var(--muted); font-size:12px; white-space:nowrap; }
-.kv dd { margin:0; text-align:right; overflow-wrap:anywhere; font-size:13px; }
+.kv dt { color:var(--muted); font-size:12px; white-space:nowrap; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+/* Values like "7 / 25" or a balance are one unit: never break them, truncate the label instead. */
+.kv dd { margin:0; text-align:right; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .rows .full { grid-column:1/-1; }
 .swarm { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:12px; color:var(--secondary); }
 .swarm .tag { border:1px solid var(--edge); color:var(--teal); border-radius:4px; padding:0 6px; }
@@ -90,7 +91,7 @@ main { max-width:1180px; margin:0 auto; padding:6px 20px 40px; }
 .stat { background:var(--inset); border:1px solid var(--edge); border-radius:5px; padding:9px 11px; min-width:0; }
 .stat .label { display:block; color:var(--muted); font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
 .stat b { display:block; margin-top:4px; font-size:18px; font-weight:400; color:var(--text);
-  font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  font-variant-numeric:tabular-nums; white-space:nowrap; }
 .stat small { display:block; margin-top:2px; color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
 .stat.gold b { color:var(--gold); } .stat.good b { color:var(--good); }
 .hive-note { margin:0; font-size:11px; }
@@ -100,6 +101,7 @@ main { max-width:1180px; margin:0 auto; padding:6px 20px 40px; }
   .hive-stats .stat:nth-child(-n+3) { grid-column:1/-1; }
 }
 @media (max-width:600px) {
+  .rows { grid-template-columns:1fr; }
   .hive-tiles { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .hive-tools { margin-left:0; width:100%; }
   .hive-tools .btn { flex:1 1 auto; }
