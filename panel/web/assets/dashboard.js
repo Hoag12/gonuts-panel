@@ -144,31 +144,6 @@ function total(items, pick) {
   }
   return any ? n : null;
 }
-function stat(label, value, note, cls) {
-  const d = el('div', 'stat' + (cls ? ' ' + cls : ''));
-  d.append(el('span', 'label', label), el('b', '', value == null ? '—' : String(value)), el('small', '', note || ''));
-  return d;
-}
-function rate(value) { return value == null ? null : (Math.round(value * 10) / 10).toFixed(1); }
-function perHourNote(value) { return value == null ? '' : ' · ' + money(value / 24) + '/h'; }
-function perHourCount(value) { return value == null ? '' : ' · ' + rate(value / 24) + '/h'; }
-function statElements(items) {
-  const t = items.map(i => i.telemetry || {});
-  const profit1 = total(t, x => x.profit?.h1), profit24 = total(t, x => x.profit?.h24);
-  const revenue1 = total(t, x => x.revenue?.h1), revenue24 = total(t, x => x.revenue?.h24);
-  const sales1 = total(t, x => x.sales?.h1), sales24 = total(t, x => x.sales?.h24);
-  const margin = profit24 != null && revenue24 != null && revenue24 > 0 ? (profit24 / revenue24 * 100).toFixed(1) + '%' : null;
-  return [
-    stat('Bank now', money(total(t, x => x.bank)), 'a balance, not profit', 'gold'),
-    stat('Profit last 24h', money(profit24), 'booked by your hive' + perHourNote(profit24), 'good'),
-    stat('Sales records last 24h', compact(sales24), 'booked sales, not unique trades' + perHourCount(sales24)),
-    stat('Profit last hour', money(profit1), 'booked', 'good'),
-    stat('Sales records last hour', compact(sales1), 'booked'),
-    stat('Profit margin 24h', margin, 'profit / sales revenue'),
-    stat('Sales revenue last 24h', money(revenue24), 'gross booked sales' + perHourNote(revenue24)),
-    stat('Sales revenue last hour', money(revenue1), 'gross booked sales')
-  ];
-}
 function swarmTile(label, value, note, opts = {}) {
   const cls = 'swarm-tile' + (opts.wide ? ' hero-tile' : '') + (opts.grid ? ' grid' : '') + (opts.cls ? ' ' + opts.cls : '');
   const d = el('div', cls);
@@ -203,7 +178,7 @@ function renderSwarm() {
     const note = ranked ? '#' + you.scoreRank + ' of ' + you.scoreOf + ' hives · ' + metricNote : metricNote;
     tiles.push(swarmTile('Overall Swarm score', Number(you.score).toFixed(1), note, { wide: true, cls: 'gold', den: ' / 100' }));
   } else {
-    tiles.push(swarmTile('Overall Swarm score', '—', 'needs two or more active hives', { wide: true, cls: 'gold' }));
+    tiles.push(swarmTile('Overall Swarm score', '—', 'no metrics reported yet', { wide: true, cls: 'gold' }));
   }
   tiles.push(swarmTile('Bank now', shortVal(you.bank), 'a balance, not profit', { wide: true, cls: 'gold' }));
   tiles.push(swarmTile('Profit, last 24h', shortVal(you.profit24), 'booked by your hive', { wide: true, cls: 'good' }));
@@ -251,9 +226,8 @@ function selectedInstallations(data) {
 }
 function renderHive(data) {
   const all = data.installations || [];
-  if (!all.length) { $('hiveOverview').hidden = true; $('splitStats').hidden = true; return; }
+  if (!all.length) { $('hiveOverview').hidden = true; return; }
   $('hiveOverview').hidden = viewMode !== 'hive';
-  $('splitStats').hidden = viewMode !== 'split';
   if (scope !== 'all' && !all.some(i => String(i.id) === String(scope))) scope = 'all';
   const selected = selectedInstallations(data);
   const online = selected.filter(i => i.online);
@@ -279,15 +253,6 @@ function renderHive(data) {
   $('hiveBank').textContent = money(total(live, i => i.telemetry?.bank));
   $('hiveTrades').textContent = compact(total(live, i => i.telemetry?.trades));
   $('hiveOnline').textContent = online.length + ' / ' + selected.length;
-  $('hiveStats').replaceChildren(...statElements(live));
-  $('splitStats').replaceChildren(...statElements(all.filter(i => i.online)));
-  $('hiveNote').textContent = live.length
-    ? 'Hive totals · online accounts only · self-reported.'
-    : 'Hive totals · no online accounts.';
-  if ($('splitNote')) {
-    $('splitNote').hidden = viewMode !== 'split';
-    $('splitNote').textContent = live.length ? 'Hive totals · online accounts only · self-reported.' : 'Hive totals · no online accounts.';
-  }
   $('hivePause').disabled = !online.length;
   $('hiveResume').disabled = !online.length;
   $('hiveRefresh').disabled = !online.length;

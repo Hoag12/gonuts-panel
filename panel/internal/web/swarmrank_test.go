@@ -65,8 +65,11 @@ func TestComputeSwarmSingleHive(t *testing.T) {
 	if got.Hives != 1 || you.Of != 1 || you.Rank != 1 {
 		t.Fatalf("single hive = %d, rank %d of %d", got.Hives, you.Rank, you.Of)
 	}
-	if you.Score != nil || you.ScoreRank != 0 {
-		t.Fatalf("one hive must not be scored, got %v (#%d)", you.Score, you.ScoreRank)
+	if you.Score == nil || *you.Score != 100 {
+		t.Fatalf("single hive score = %v, want 100", you.Score)
+	}
+	if you.ScoreRank != 1 || you.ScoreOf != 1 || you.ScoreMetrics != 6 {
+		t.Fatalf("single hive score rank = %d of %d over %d, want 1 of 1 over 6", you.ScoreRank, you.ScoreOf, you.ScoreMetrics)
 	}
 }
 
@@ -122,8 +125,8 @@ func TestComputeSwarmMissingMetricNotScored(t *testing.T) {
 	installs := map[string]*store.Installation{"1": a, "2": b}
 	got := computeSwarm(installs, "A", now)
 	you := got.You
-	if you.ScoreMetrics != 5 {
-		t.Fatalf("scored metrics = %d, want 5 (sales1/sales24 excluded on B)", you.ScoreMetrics)
+	if you.ScoreMetrics != 6 {
+		t.Fatalf("scored metrics = %d, want 6 (a lone reporter scores 100)", you.ScoreMetrics)
 	}
 	if _, ok := you.Metrics["sales1"]; !ok {
 		t.Fatalf("your own sales1 is reported and should still be shown with a rank of 1 of 1")

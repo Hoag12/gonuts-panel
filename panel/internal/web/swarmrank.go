@@ -14,8 +14,9 @@ import (
 // Discord accounts that own at least one bot which reported in the last ten
 // minutes, the headline rank orders hives by booked profit over 24 hours, and
 // the score is the equal-weighted mean of a hive's percentile in each of the
-// six metrics that at least two hives report. Missing metrics are left out,
-// never scored zero, and equal figures share a rank.
+// six metrics it reports. A metric reported by a single hive scores 100, so
+// one active hive still has a score. Missing metrics are left out, never
+// scored zero, and equal figures share a rank.
 const (
 	swarmActiveWindow = 10 * time.Minute
 	swarmValidSeconds = 60
@@ -196,8 +197,11 @@ func rankOf(values []*float64, v *float64) (int, int) {
 
 func percentile(values []*float64, v *float64) (float64, bool) {
 	rank, of := rankOf(values, v)
-	if of < 2 || rank == 0 {
+	if rank == 0 || of == 0 {
 		return 0, false
+	}
+	if of == 1 {
+		return 100, true
 	}
 	return float64(of-rank) / float64(of-1) * 100, true
 }
@@ -248,7 +252,7 @@ func computeSwarm(installs map[string]*store.Installation, you string, now time.
 	}
 
 	// Score every hive: equal-weighted mean of the percentiles of the metrics
-	// at least two hives report.
+	// it reports.
 	scores := make([]*float64, len(keys))
 	counted := make([]int, len(keys))
 	for _, key := range swarmScoreMetrics {

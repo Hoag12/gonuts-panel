@@ -14,7 +14,7 @@
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" sizes="180x180" href="/assets/icon-180.png">
 <link rel="apple-touch-icon" sizes="192x192" href="/assets/icon-192.png">
-<link rel="stylesheet" href="/assets/dashboard.css?v=20261120d">
+<link rel="stylesheet" href="/assets/dashboard.css?v=20261120e">
 </head>
 <body>
 <header class="top">
@@ -66,12 +66,8 @@
       <button class="btn" id="hiveRefresh">Refresh</button>
       <span class="muted" id="hiveScopeNote"></span>
     </div>
-    <div id="hiveStats" class="hive-stats"></div>
-    <p class="hive-note muted" id="hiveNote"></p>
   </section>
   <section id="cards" class="cards" aria-live="polite"></section>
-  <section id="splitStats" class="hive-stats split-stats" aria-label="Hive totals" hidden></section>
-  <p class="hive-note muted" id="splitNote" hidden>Hive totals · online accounts only · self-reported.</p>
   <section id="swarmPanel" class="swarm-panel panel" hidden>
     <div class="swarm-tabs">
       <div class="swarm-pills" role="group" aria-label="Swarm scope">
@@ -109,7 +105,7 @@
     <h2>How rankings work</h2>
     <p>A hive is one Discord account with at least one linked bot that reported in the last 10 minutes. Several bots on the same Minecraft account are counted once.</p>
     <p>The main rank orders active hives by booked profit over the last 24 hours. Equal figures share a rank.</p>
-    <p>The overall score is the equal-weighted mean of your percentile in six metrics: sales records, profit, margin and sales revenue over the last hour and last 24 hours. Only metrics reported by at least two hives are scored; a missing metric is left out, never scored as zero.</p>
+    <p>The overall score is the equal-weighted mean of your percentile in six metrics: sales records, profit, margin and sales revenue over the last hour and last 24 hours. A metric only one hive reports scores 100 for that hive, and a missing metric is left out, never scored as zero.</p>
     <p>Only hives linked to this panel are ranked, and every figure is self-reported by the bot.</p>
     <div class="modal-actions">
       <button class="btn" id="closeRankModal">Close</button>
@@ -118,6 +114,6 @@
 </div>
 <div id="toast" class="toast" hidden></div>
 <button class="refresh-fab" id="refreshFab" type="button" aria-label="Refresh dashboard">&#8635;</button>
-<script src="/assets/dashboard.js?v=20261120c"></script>
+<script src="/assets/dashboard.js?v=20261120d"></script>
 </body>
 </html>

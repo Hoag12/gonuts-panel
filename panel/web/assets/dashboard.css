@@ -129,22 +129,8 @@ main { max-width:1180px; margin:0 auto; padding:6px 20px 40px; }
 .hive-tiles b { display:block; margin-top:3px; font-size:17px; font-weight:400; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .hive-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .hive-controls .btn { flex:0 0 auto; }
-.hive-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
-.split-stats { margin-top:18px; }
 .top .seg { flex:0 0 auto; }
 @media (max-width:600px) { .top .seg { order:3; } }
-.stat { background:var(--inset); border:1px solid var(--edge); border-radius:5px; padding:9px 11px; min-width:0; }
-.stat .label { display:block; color:var(--muted); font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
-.stat b { display:block; margin-top:4px; font-size:18px; font-weight:400; color:var(--text);
-  font-variant-numeric:tabular-nums; white-space:nowrap; }
-.stat small { display:block; margin-top:2px; color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
-.stat.gold b { color:var(--gold); } .stat.good b { color:var(--good); }
-.hive-note { margin:0; font-size:11px; }
-#splitNote { margin-top:10px; }
-@media (max-width:900px) {
-  .hive-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .hive-stats .stat:nth-child(-n+3) { grid-column:1/-1; }
-}
 @media (max-width:600px) {
   .rows { grid-template-columns:1fr; }
   .hive-tiles { grid-template-columns:repeat(2,minmax(0,1fr)); }
