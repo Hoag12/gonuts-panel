@@ -212,7 +212,11 @@ function renderHive(data) {
 }
 function render(data) {
   current = data;
-  $('who').textContent = data.user.globalName || data.user.username || '';
+  // The Discord handle (username) is the stable account name; the global
+  // name is a display alias the user can change at any time.
+  const who = $('who');
+  who.textContent = data.user.username || data.user.globalName || '';
+  who.title = [data.user.globalName, data.user.username].filter(Boolean).join(' · ');
   const all = data.installations || [];
   const cards = $('cards');
   const showCards = viewMode === 'split';
