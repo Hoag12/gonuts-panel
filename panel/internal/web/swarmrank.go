@@ -11,8 +11,8 @@ import (
 )
 
 // The Swarm ranking reproduces the old hosted dashboard's card: hives are the
-// Discord accounts that own at least one bot which reported in the last ten
-// minutes, the headline rank orders hives by booked profit over 24 hours, and
+// Discord accounts that own at least one bot which is online right now, the
+// headline rank orders hives by booked profit over 24 hours, and
 // the score is the equal-weighted mean of a hive's percentile in each of the
 // six metrics it reports. A metric reported by a single hive scores 100, so
 // one active hive still has a score. Missing metrics are left out, never
@@ -214,7 +214,9 @@ func computeSwarm(installs map[string]*store.Installation, you string, now time.
 	cutoff := now.Add(-swarmActiveWindow).UnixMilli()
 	hives := map[string]*hiveAgg{}
 	for _, inst := range installs {
-		if inst == nil || inst.DiscordID == "" {
+		// Only a connected bot keeps its hive in the ranking; the time window
+		// guards against an Online flag left behind by a crashed relay.
+		if inst == nil || inst.DiscordID == "" || !inst.Online {
 			continue
 		}
 		seen := inst.LastSeen

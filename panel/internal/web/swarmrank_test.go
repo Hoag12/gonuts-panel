@@ -16,7 +16,7 @@ func mkInst(id int64, discordID, account string, seen time.Time, bank, p1, p24, 
 	t.Profit = iv(p1, p24)
 	t.Revenue = iv(r1, r24)
 	t.Sales = iv(s1, s24)
-	return &store.Installation{ID: id, DiscordID: discordID, Name: account, LastSeen: seen.UnixMilli(), Telemetry: t}
+	return &store.Installation{ID: id, DiscordID: discordID, Name: account, LastSeen: seen.UnixMilli(), Telemetry: t, Online: true}
 }
 
 func TestComputeSwarmRanksAndScore(t *testing.T) {
@@ -88,6 +88,21 @@ func TestComputeSwarmExcludesStaleAndKeepsNewestPerAccount(t *testing.T) {
 	}
 	if got.You.Bank == nil || *got.You.Bank != 100 {
 		t.Fatalf("dedupe kept %v, want the newest frame (100)", got.You.Bank)
+	}
+}
+
+func TestComputeSwarmExcludesOfflineBots(t *testing.T) {
+	now := time.Now()
+	online := mkInst(1, "A", "a1", now, 100, 20, 200, 100, 1000, 5, 50)
+	gone := mkInst(2, "B", "b1", now.Add(-time.Minute), 50, 10, 400, 200, 2000, 8, 80)
+	gone.Online = false
+	installs := map[string]*store.Installation{"1": online, "2": gone}
+	got := computeSwarm(installs, "A", now)
+	if got.Hives != 1 || got.Bots != 1 {
+		t.Fatalf("hives/bots = %d/%d, want 1/1 (offline bot is not an active hive)", got.Hives, got.Bots)
+	}
+	if !got.You.Active || got.You.Of != 1 {
+		t.Fatalf("caller = %+v, want active rank 1 of 1", got.You)
 	}
 }
 
