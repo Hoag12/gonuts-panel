@@ -14,7 +14,7 @@
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" sizes="180x180" href="/assets/icon-180.png">
 <link rel="apple-touch-icon" sizes="192x192" href="/assets/icon-192.png">
-<link rel="stylesheet" href="/assets/dashboard.css?v=20261120b">
+<link rel="stylesheet" href="/assets/dashboard.css?v=20261120c">
 </head>
 <body>
 <header class="top">
@@ -40,6 +40,25 @@
   <section id="empty" class="empty panel" hidden>
     <h2>No clients linked yet</h2>
     <p>Choose <strong>Link client</strong>, then enter the code in GoNuts → Dashboard → Link with code.</p>
+  </section>
+  <section id="swarmPanel" class="swarm-panel panel" hidden>
+    <div class="swarm-tabs">
+      <div class="swarm-pills" role="group" aria-label="Swarm scope">
+        <button type="button" id="swarmTabRank" aria-pressed="true">Swarm ranking</button>
+        <button type="button" id="swarmTabHive" aria-pressed="false">your hive only</button>
+      </div>
+      <span class="swarm-badge">estimated · self-reported</span>
+    </div>
+    <div class="swarm-meta">
+      <span id="swarmValid" class="muted">valid —</span>
+      <button type="button" class="swarm-help" id="swarmHelp">How rankings work</button>
+    </div>
+    <div class="swarm-hero" id="swarmHero">
+      <div class="swarm-rank"><span id="swarmRank" class="num">—</span><span id="swarmOf" class="of"> of — active hives</span></div>
+      <div class="swarm-sub muted" id="swarmSub">Rank by booked profit, last 24 hours</div>
+    </div>
+    <div id="swarmTiles" class="swarm-tiles"></div>
+    <p class="swarm-foot muted" id="swarmFoot">Whole Swarm and your hive · hives linked to this panel only</p>
   </section>
   <section id="hiveOverview" class="hive-overview panel" hidden>
     <div class="hive-head">
@@ -85,8 +104,20 @@
     </div>
   </div>
 </div>
+<div id="rankModal" class="modal" hidden>
+  <div class="modal-card panel">
+    <h2>How rankings work</h2>
+    <p>A hive is one Discord account with at least one linked bot that reported in the last 10 minutes. Several bots on the same Minecraft account are counted once.</p>
+    <p>The main rank orders active hives by booked profit over the last 24 hours. Equal figures share a rank.</p>
+    <p>The overall score is the equal-weighted mean of your percentile in six metrics: sales records, profit, margin and sales revenue over the last hour and last 24 hours. Only metrics reported by at least two hives are scored; a missing metric is left out, never scored as zero.</p>
+    <p>Only hives linked to this panel are ranked, and every figure is self-reported by the bot.</p>
+    <div class="modal-actions">
+      <button class="btn" id="closeRankModal">Close</button>
+    </div>
+  </div>
+</div>
 <div id="toast" class="toast" hidden></div>
 <button class="refresh-fab" id="refreshFab" type="button" aria-label="Refresh dashboard">&#8635;</button>
-<script src="/assets/dashboard.js?v=20261120"></script>
+<script src="/assets/dashboard.js?v=20261120c"></script>
 </body>
 </html>

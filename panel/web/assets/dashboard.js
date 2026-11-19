@@ -4,6 +4,8 @@ let current = null, toastTimer = 0, countdown = 0;
 let viewMode = localStorage.getItem('gonuts.viewMode') || 'split';
 let scope = localStorage.getItem('gonuts.scope') || 'all';
 let maskNames = localStorage.getItem('gonuts.mask') === '1';
+let swarmData = null, swarmValidUntil = 0, swarmAt = 0;
+let swarmMode = localStorage.getItem('gonuts.swarmTab') === 'hive' ? 'hive' : 'rank';
 function displayName(inst, i) { return maskNames ? 'Account ' + (i + 1) : (inst.name || 'GoNuts client'); }
 
 async function api(path, opts = {}) {
@@ -40,6 +42,17 @@ function ago(ms) {
   if (s < 3600) return Math.floor(s / 60) + 'm ago';
   if (s < 86400) return Math.floor(s / 3600) + 'h ago';
   return Math.floor(s / 86400) + 'd ago';
+}
+// The ranking card uses the compact figures of the old hosted dashboard:
+// 172M, 2.3K, 201 — no currency symbol.
+function shortVal(v) {
+  if (v == null || !Number.isFinite(Number(v))) return '—';
+  const n = Number(v), a = Math.abs(n), sign = n < 0 ? '-' : '';
+  const trim = x => { const s = (Math.round(x * 10) / 10).toFixed(1); return s.endsWith('.0') ? s.slice(0, -2) : s; };
+  if (a >= 1e9) return sign + trim(a / 1e9) + 'B';
+  if (a >= 1e6) return sign + trim(a / 1e6) + 'M';
+  if (a >= 1e3) return sign + trim(a / 1e3) + 'K';
+  return sign + Math.round(a);
 }
 function interval(v) { return v && v.h24 != null ? v.h24 : null; }
 function source(v) { return v && v.source ? v.source : 'booked'; }
@@ -156,6 +169,82 @@ function statElements(items) {
     stat('Sales revenue last hour', money(revenue1), 'gross booked sales')
   ];
 }
+function swarmTile(label, value, note, opts = {}) {
+  const cls = 'swarm-tile' + (opts.wide ? ' hero-tile' : '') + (opts.grid ? ' grid' : '') + (opts.cls ? ' ' + opts.cls : '');
+  const d = el('div', cls);
+  d.append(el('span', 'label', label));
+  const b = el('strong', '', value == null ? '—' : String(value));
+  if (opts.den) b.append(el('span', 'den', opts.den));
+  d.append(b);
+  d.append(el('small', '', note || ''));
+  return d;
+}
+function renderSwarm() {
+  if (!swarmData) return;
+  const you = swarmData.you || {};
+  const metrics = you.metrics || {};
+  const hives = Number(swarmData.hives) || 0;
+  const bots = Number(swarmData.bots) || 0;
+  const active = !!you.active;
+  const ranked = swarmMode === 'rank';
+  $('swarmTabRank').setAttribute('aria-pressed', ranked ? 'true' : 'false');
+  $('swarmTabHive').setAttribute('aria-pressed', ranked ? 'false' : 'true');
+  $('swarmHero').hidden = !ranked;
+  const of = active ? (Number(you.of) || hives) : 0;
+  $('swarmRank').textContent = active && you.rank ? '#' + you.rank : '#—';
+  $('swarmOf').textContent = active
+    ? (you.rank ? ' of ' + of + ' active hive' + (of === 1 ? '' : 's') : ' unranked · ' + hives + ' active hive' + (hives === 1 ? '' : 's'))
+    : ' no active hive for this Discord account';
+  $('swarmFoot').textContent = 'Whole Swarm and your hive · ' + hives + ' active hive' + (hives === 1 ? '' : 's') + ' · ' + bots + ' bot' + (bots === 1 ? '' : 's');
+
+  const tiles = [];
+  if (you.score != null) {
+    const metricNote = Number(you.scoreMetrics) === 6 ? 'all 6 metrics' : (you.scoreMetrics || 0) + ' of 6 metrics';
+    const note = ranked ? '#' + you.scoreRank + ' of ' + you.scoreOf + ' hives · ' + metricNote : metricNote;
+    tiles.push(swarmTile('Overall Swarm score', Number(you.score).toFixed(1), note, { wide: true, cls: 'gold', den: ' / 100' }));
+  } else {
+    tiles.push(swarmTile('Overall Swarm score', '—', 'needs two or more active hives', { wide: true, cls: 'gold' }));
+  }
+  tiles.push(swarmTile('Bank now', shortVal(you.bank), 'a balance, not profit', { wide: true, cls: 'gold' }));
+  tiles.push(swarmTile('Profit, last 24h', shortVal(you.profit24), 'booked by your hive', { wide: true, cls: 'good' }));
+  tiles.push(swarmTile('Sales records, last 24 h', shortVal(you.sales24), 'booked sales, not unique trades', { wide: true }));
+  const grid = [
+    ['Sales records last hour', 'sales1', 'booked', v => shortVal(v), ''],
+    ['Profit last hour', 'profit1', 'booked', v => shortVal(v), 'good'],
+    ['Profit last 24h', 'profit24', 'booked by your hive', v => shortVal(v), 'good'],
+    ['Profit margin 24h', 'margin', 'profit / sales revenue', v => Number(v).toFixed(1) + '%', ''],
+    ['Sales revenue last 24h', 'revenue24', 'gross booked sales', v => shortVal(v), ''],
+    ['Sales revenue last hour', 'revenue1', 'gross booked sales', v => shortVal(v), '']
+  ];
+  for (const [label, key, fallback, fmt, cls] of grid) {
+    const met = metrics[key];
+    const value = met ? fmt(met.value) : '—';
+    const note = met && ranked ? '#' + met.rank + ' of ' + met.of + ' hives' : fallback;
+    tiles.push(swarmTile(label, value, note, { grid: true, cls }));
+  }
+  $('swarmTiles').replaceChildren(...tiles);
+}
+function tickSwarmValid() {
+  if (!swarmData) return;
+  const left = Math.max(0, Math.ceil((swarmValidUntil - Date.now()) / 1000));
+  $('swarmValid').textContent = left > 0 ? 'valid ' + left + ' s' : 'refreshing…';
+}
+async function loadSwarm(force) {
+  const now = Date.now();
+  if (!force && now - swarmAt < 10000) return;
+  swarmAt = now;
+  try {
+    swarmData = await api('/dashboard/api/swarm', { cache: 'no-store' });
+    swarmValidUntil = Date.now() + (Number(swarmData.validForSec) || 60) * 1000;
+    renderSwarm();
+    tickSwarmValid();
+  } catch (e) { /* ranking is additive: the rest of the dashboard still works */ }
+}
+function setSwarmMode(mode) {
+  swarmMode = mode === 'hive' ? 'hive' : 'rank';
+  localStorage.setItem('gonuts.swarmTab', swarmMode);
+  renderSwarm();
+}
 function selectedInstallations(data) {
   const all = data.installations || [];
   return scope === 'all' ? all : all.filter(i => String(i.id) === String(scope));
@@ -193,7 +282,7 @@ function renderHive(data) {
   $('hiveStats').replaceChildren(...statElements(live));
   $('splitStats').replaceChildren(...statElements(all.filter(i => i.online)));
   $('hiveNote').textContent = live.length
-    ? 'Hive totals · online accounts only · self-reported. Swarm ranking is not part of this self-hosted panel.'
+    ? 'Hive totals · online accounts only · self-reported.'
     : 'Hive totals · no online accounts.';
   if ($('splitNote')) {
     $('splitNote').hidden = viewMode !== 'split';
@@ -223,11 +312,13 @@ function render(data) {
   cards.hidden = !showCards || !all.length;
   cards.replaceChildren(...(showCards ? all.map((inst, i) => card(inst, i)) : []));
   $('empty').hidden = all.length > 0;
+  $('swarmPanel').hidden = all.length === 0;
   renderHive(data);
 }
 async function load() {
   try { render(await api('/dashboard/api/state', { cache: 'no-store' })); }
   catch (e) { toast(e.message, true); }
+  loadSwarm();
 }
 async function commandMany(insts, cmd) {
   const targets = insts.filter(i => i.online);
@@ -283,6 +374,10 @@ $('maskNames').onclick = () => {
 $('maskNames').setAttribute('aria-pressed', maskNames ? 'true' : 'false');
 $('maskNames').textContent = maskNames ? 'Show names' : 'Hide names';
 $('scope').addEventListener('change', e => { scope = e.target.value; localStorage.setItem('gonuts.scope', scope); if (current) render(current); });
+$('swarmTabRank').onclick = () => setSwarmMode('rank');
+$('swarmTabHive').onclick = () => setSwarmMode('hive');
+$('swarmHelp').onclick = () => { $('rankModal').hidden = false; };
+$('closeRankModal').onclick = () => { $('rankModal').hidden = true; };
 $('linkClient').onclick = linkClient;
 $('closeModal').onclick = () => { $('modal').hidden = true; load(); };
 $('copyCode').onclick = async () => { try { await navigator.clipboard.writeText($('code').textContent); toast('Copied'); } catch (e) { toast('Copy failed', true); } };
@@ -319,3 +414,5 @@ load(); connect();
 setInterval(load, 15000);
 // Refresh relative timestamps without refetching.
 setInterval(() => { if (current) render(current); }, 10000);
+// The ranking snapshot is valid for 60 seconds; count it down locally.
+setInterval(tickSwarmValid, 1000);

@@ -66,6 +66,51 @@ main { max-width:1180px; margin:0 auto; padding:6px 20px 40px; }
 .link:hover { color:var(--gold); }
 .hive { margin-top:18px; padding:12px 16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 .hive .spacer { flex:1; }
+.swarm-panel { margin:0 0 18px; padding:14px 16px; display:flex; flex-direction:column; gap:12px; }
+.swarm-tabs { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.swarm-pills { display:flex; gap:6px; flex-wrap:wrap; }
+.swarm-pills button { font:inherit; font-size:12px; padding:6px 12px; min-height:32px; border-radius:999px;
+  border:1px solid transparent; background:none; color:var(--muted); cursor:pointer; white-space:nowrap; }
+.swarm-pills button:hover { color:var(--text); }
+.swarm-pills button[aria-pressed="true"] { color:var(--gold); background:var(--inset); border-color:var(--edge); }
+.swarm-badge { margin-left:auto; color:var(--muted); font-size:11px; }
+.swarm-meta { display:flex; align-items:center; gap:10px; font-size:11px; }
+.swarm-meta #swarmValid { color:var(--good); }
+.swarm-help { margin-left:auto; background:none; border:0; padding:0; font:inherit; font-size:11px;
+  color:var(--good); text-decoration:underline; text-underline-offset:3px; cursor:pointer; }
+.swarm-help:hover { color:var(--gold); }
+.swarm-hero { display:flex; flex-direction:column; gap:3px; }
+.swarm-rank { font-size:20px; white-space:nowrap; }
+.swarm-rank .num { color:var(--gold); font-size:30px; font-weight:700; }
+.swarm-rank .of { color:var(--text); font-weight:700; }
+.swarm-sub { font-size:13px; }
+.swarm-tiles { display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:8px; }
+.swarm-tile { background:var(--inset); border:1px solid var(--edge); border-radius:5px;
+  padding:10px 12px; min-width:0; grid-column:span 4; }
+.swarm-tile.hero-tile { grid-column:span 3; }
+.swarm-tile .label { display:block; color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
+.swarm-tile strong { display:block; margin-top:4px; font-size:26px; font-weight:400; color:var(--text);
+  font-variant-numeric:tabular-nums; white-space:nowrap; }
+.swarm-tile strong .den { font-size:14px; color:var(--muted); }
+.swarm-tile small { display:block; margin-top:3px; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+.swarm-tile.gold strong { color:var(--gold); }
+.swarm-tile.good strong { color:var(--good); }
+.swarm-tile.grid .label { font-size:10px; letter-spacing:.08em; text-transform:uppercase; }
+.swarm-tile.grid strong { font-size:18px; }
+.swarm-tile.grid small { font-size:11px; }
+.swarm-foot { margin:0; font-size:11px; }
+@media (max-width:900px) {
+  .swarm-tile.hero-tile { grid-column:span 6; }
+  .swarm-tile { grid-column:span 6; }
+}
+@media (max-width:600px) {
+  .swarm-tile.hero-tile { grid-column:span 12; }
+  .swarm-tile { grid-column:span 6; }
+  .swarm-pills button { font-size:10px; padding:5px 8px; min-height:30px; }
+  .swarm-badge { font-size:9px; margin-left:auto; }
+  .swarm-tile.hero-tile strong { font-size:24px; }
+  .swarm-tile.grid .label { font-size:9px; letter-spacing:.02em; }
+}
 .hive-overview { margin:0 0 18px; padding:14px 16px; display:flex; flex-direction:column; gap:12px; }
 .hive-head { display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; }
 .hive-title { display:flex; flex-direction:column; gap:2px; min-width:0; }

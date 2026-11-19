@@ -156,6 +156,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /auth/logout", pageRedirect("/dashboard"))
 	mux.HandleFunc("GET /auth/dev", s.authDev)
 	mux.HandleFunc("GET /dashboard/api/state", s.apiState)
+	mux.HandleFunc("GET /dashboard/api/swarm", s.swarmRank)
 	mux.HandleFunc("POST /dashboard/api/pair/code", s.apiPairCode)
 	mux.HandleFunc("POST /dashboard/api/installations/{id}/command", s.apiCommand)
 	mux.HandleFunc("POST /dashboard/api/installations/{id}/rename", s.apiRename)
