@@ -176,8 +176,25 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /dashboard/panel/{id}/{$}", s.panelPage)
 	mux.HandleFunc("GET /dashboard/panel/{id}/{path...}", s.panelGet)
 	mux.HandleFunc("POST /dashboard/panel/{id}/{path...}", s.panelPost)
-	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(webassets.Assets))))
+	mux.Handle("GET /assets/", cacheAssets(http.StripPrefix("/assets/", http.FileServer(http.FS(webassets.Assets)))))
 	return s.middleware(s.canonicalHost(mux))
+}
+
+// cacheAssets gives the embedded static files a real cache lifetime. The file
+// server cannot derive one from an embed.FS (no modification times), so every
+// visit re-downloaded the same bytes; the font and icons never change between
+// builds while the script and stylesheet must still follow a deploy.
+func cacheAssets(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, ".ttf"), strings.HasSuffix(r.URL.Path, ".png"),
+			strings.HasSuffix(r.URL.Path, ".woff2"), strings.HasSuffix(r.URL.Path, ".ico"):
+			w.Header().Set("Cache-Control", "public, max-age=2592000, immutable")
+		default:
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // canonicalHost sends visitors arriving on an alias domain to the public base
