@@ -280,10 +280,19 @@ function render(data) {
   $('swarmPanel').hidden = all.length === 0;
   renderHive(data);
 }
+let onlineSig = null;
 async function load() {
-  try { render(await api('/dashboard/api/state', { cache: 'no-store' })); }
-  catch (e) { toast(e.message, true); }
-  loadSwarm();
+  try {
+    const data = await api('/dashboard/api/state', { cache: 'no-store' });
+    // A hive joins or leaves the ranking the moment its bot connects or
+    // disconnects, so refetch the ranking whenever presence changes instead of
+    // waiting for the next allowed poll.
+    const sig = (data.installations || []).map(i => i.id + (i.online ? '1' : '0')).join(',');
+    const presenceChanged = sig !== onlineSig;
+    onlineSig = sig;
+    render(data);
+    loadSwarm(presenceChanged);
+  } catch (e) { toast(e.message, true); }
 }
 async function commandMany(insts, cmd) {
   const targets = insts.filter(i => i.online);
