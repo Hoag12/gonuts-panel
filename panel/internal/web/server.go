@@ -8,6 +8,8 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"mime"
@@ -15,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"gonutspanel/internal/auth"
@@ -39,6 +42,9 @@ const dashboardCSP = "default-src 'self'; img-src 'self' data:; style-src 'self'
 func init() {
 	if err := mime.AddExtensionType(".ttf", "font/ttf"); err != nil {
 		log.Printf("web: register .ttf mime type: %v", err)
+	}
+	if err := mime.AddExtensionType(".woff2", "font/woff2"); err != nil {
+		log.Printf("web: register .woff2 mime type: %v", err)
 	}
 }
 
@@ -188,6 +194,10 @@ func (s *Server) Handler() http.Handler {
 func cacheAssets(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.URL.Query().Get("v") != "":
+			// The shell stamps script and stylesheet URLs with a content hash,
+			// so a changed file gets a new URL and the old one can be kept.
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		case strings.HasSuffix(r.URL.Path, ".ttf"), strings.HasSuffix(r.URL.Path, ".png"),
 			strings.HasSuffix(r.URL.Path, ".woff2"), strings.HasSuffix(r.URL.Path, ".ico"):
 			w.Header().Set("Cache-Control", "public, max-age=2592000, immutable")
@@ -425,9 +435,9 @@ func (s *Server) dashboardPage(w http.ResponseWriter, r *http.Request) {
 	if !s.dashboardLimit(w, r) {
 		return
 	}
-	sess, _, ok := s.session(r)
+	sess, user, ok := s.session(r)
 	if !ok && s.Cfg.AuthDisabled {
-		sess, _ = s.autoSession(w)
+		sess, user = s.autoSession(w)
 		ok = sess != nil
 	}
 	if !ok {
@@ -442,7 +452,16 @@ func (s *Server) dashboardPage(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(b)
 		return
 	}
-	b, err := dashboardHTML(sess.CSRF)
+	// The first state is embedded in the shell so the page can paint data
+	// without waiting for /dashboard/api/state. A marshal failure only costs
+	// that shortcut; the script falls back to its normal fetch.
+	var state []byte
+	if user != nil {
+		if body, err := json.Marshal(s.stateView(sess, user)); err == nil {
+			state = body
+		}
+	}
+	b, err := dashboardHTML(sess.CSRF, state)
 	if err != nil {
 		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 		return
@@ -465,13 +484,68 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-// dashboardHTML loads the dashboard shell and substitutes the CSRF token.
-func dashboardHTML(csrf string) ([]byte, error) {
-	b, err := webassets.FS.ReadFile("dashboard.html")
-	if err != nil {
-		return nil, err
+// pageShells are the embedded pages read once at first use. The dashboard
+// stylesheet is inlined so first paint needs no separate CSS round trip, and
+// the script URL carries its content hash so it can be cached forever.
+type pageShells struct {
+	dashboard string
+	login     string
+	css       string
+	jsVersion string
+	err       error
+}
+
+var (
+	shellOnce  sync.Once
+	shellCache pageShells
+)
+
+func loadShells() pageShells {
+	shellOnce.Do(func() {
+		dashboard, err := webassets.FS.ReadFile("dashboard.html")
+		if err != nil {
+			shellCache.err = err
+			return
+		}
+		login, err := webassets.FS.ReadFile("login.html")
+		if err != nil {
+			shellCache.err = err
+			return
+		}
+		css, err := webassets.FS.ReadFile("assets/dashboard.css")
+		if err != nil {
+			shellCache.err = err
+			return
+		}
+		script, err := webassets.FS.ReadFile("assets/dashboard.js")
+		if err != nil {
+			shellCache.err = err
+			return
+		}
+		sum := sha256.Sum256(script)
+		shellCache = pageShells{
+			dashboard: string(dashboard),
+			login:     string(login),
+			css:       string(css),
+			jsVersion: hex.EncodeToString(sum[:8]),
+		}
+	})
+	return shellCache
+}
+
+// dashboardHTML renders the dashboard shell with the session CSRF token and,
+// when available, the first state payload. The state is substituted last so a
+// value inside it can never be read as another template placeholder.
+func dashboardHTML(csrf string, state []byte) ([]byte, error) {
+	shells := loadShells()
+	if shells.err != nil {
+		return nil, shells.err
 	}
-	return []byte(strings.ReplaceAll(string(b), "{{CSRF}}", csrf)), nil
+	page := strings.ReplaceAll(shells.dashboard, "{{CSS}}", shells.css)
+	page = strings.ReplaceAll(page, "{{JSV}}", shells.jsVersion)
+	page = strings.ReplaceAll(page, "{{CSRF}}", csrf)
+	page = strings.ReplaceAll(page, "{{STATE}}", string(state))
+	return []byte(page), nil
 }
 
 // Sign-in page fragments. login.html carries the chrome and these fill its
@@ -494,9 +568,9 @@ const (
 // is configured, a Discord link when Discord is enabled, both with an "or"
 // divider when both exist, and an explanation when neither does.
 func (s *Server) loginHTML(localError bool) ([]byte, error) {
-	b, err := webassets.FS.ReadFile("login.html")
-	if err != nil {
-		return nil, err
+	shells := loadShells()
+	if shells.err != nil {
+		return nil, shells.err
 	}
 	local := s.Cfg.LocalAuthEnabled() && !s.Cfg.HideLocalLogin
 	form, link, notice := "", "", ""
@@ -514,7 +588,7 @@ func (s *Server) loginHTML(localError bool) ([]byte, error) {
 	if local && localError {
 		notice = loginLocalError
 	}
-	page := string(b)
+	page := strings.ReplaceAll(shells.login, "{{CSS}}", shells.css)
 	page = strings.ReplaceAll(page, "{{ERROR}}", notice)
 	page = strings.ReplaceAll(page, "{{LOCAL_FORM}}", form)
 	page = strings.ReplaceAll(page, "{{DISCORD_LINK}}", link)

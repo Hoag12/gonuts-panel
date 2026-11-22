@@ -1,4 +1,4 @@
-@font-face { font-family:"GoNuts Pixel"; src:url(/assets/Monocraft.ttf) format("truetype"); font-display:swap; }
+@font-face { font-family:"GoNuts Pixel"; src:url(/assets/monocraft-subset.woff2) format("woff2"); font-display:swap; }
 :root { --bg:#0b1118; --surface:#111a24; --inset:#0d141c; --edge:#263442; --text:#f0eee7;
   --secondary:#b6c2cd; --muted:#8799aa; --gold:#f4cd7a; --teal:#56dccb; --good:#77deb0;
   --warn:#f3b576; --bad:#ff858c; --pixel:"GoNuts Pixel", "Courier New", monospace; }

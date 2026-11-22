@@ -382,7 +382,19 @@ function connect() {
   sse.addEventListener('update', () => load());
   sse.onerror = () => { sse.close(); setTimeout(connect, 5000); };
 }
-load(); connect();
+// The shell embeds the first state, so paint data without waiting for a
+// round trip. A missing or broken payload falls back to the normal fetch.
+let boot = null;
+try { boot = JSON.parse($('initial-state').textContent || 'null'); } catch (e) {}
+if (boot && boot.user && Array.isArray(boot.installations)) {
+  onlineSig = boot.installations.map(i => i.id + (i.online ? '1' : '0')).join(',');
+  render(boot);
+  loadSwarm(true);
+  setTimeout(load, 4000);
+} else {
+  load();
+}
+connect();
 // Poll as well as stream: the hub's Updates() channel is single-consumer, so a
 // second tab can miss an event that another tab consumed.
 setInterval(load, 15000);

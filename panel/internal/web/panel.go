@@ -16,6 +16,7 @@ import (
 	"gonutspanel/internal/panel"
 	"gonutspanel/internal/relay"
 	"gonutspanel/internal/store"
+	webassets "gonutspanel/web"
 )
 
 const (
@@ -303,9 +304,9 @@ func (s *Server) panelGet(w http.ResponseWriter, r *http.Request) {
 		}
 		s.panelAsset(w, r, inst.ID, path, map[string]any{"op": "icon", "item": item})
 	case path == "logo.png":
-		s.panelAsset(w, r, inst.ID, path, map[string]any{"op": "asset", "asset": "logo"})
+		panelStatic(w, "logo.png", "image/png")
 	case path == "font.ttf":
-		s.panelAsset(w, r, inst.ID, path, map[string]any{"op": "asset", "asset": "font"})
+		panelStatic(w, "Monocraft.ttf", "font/ttf")
 	default:
 		http.NotFound(w, r)
 	}
@@ -385,6 +386,21 @@ func (s *Server) panelAsset(w http.ResponseWriter, r *http.Request, id int64, pa
 			s.PanelCache.putAsset(key, body, contentType, panelAssetTTL)
 		}
 	})
+}
+
+// panelStatic serves the logo and font the panel page asks for. They are the
+// same files in every client build, so serving the embedded copy avoids two
+// relay round trips (and about 230 KB over the game socket) on first open.
+func panelStatic(w http.ResponseWriter, name, contentType string) {
+	body, err := webassets.FS.ReadFile("assets/" + name)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", contentType)
+	h.Set("Cache-Control", "public, max-age=604800")
+	_, _ = w.Write(body)
 }
 
 // panelImage relays the live panel image. The mod appends ?t= to panel.png to

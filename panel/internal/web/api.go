@@ -144,7 +144,13 @@ func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	writeJSON(w, http.StatusOK, s.stateView(sess, user))
+}
 
+// stateView builds the dashboard payload. The dashboard page embeds the same
+// map so its first paint does not wait for this endpoint; the endpoint stays
+// for refreshes and for the live stream.
+func (s *Server) stateView(sess *store.Session, user *store.User) map[string]any {
 	installs := s.Store.InstallationsFor(user.ID)
 	out := make([]map[string]any, 0, len(installs))
 	hives := map[string]int{}
@@ -173,7 +179,7 @@ func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
 		hiveList = append(hiveList, map[string]any{"name": name, "count": hives[name]})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	return map[string]any{
 		"csrf": sess.CSRF,
 		"user": map[string]any{
 			"id":         user.ID,
@@ -185,7 +191,7 @@ func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
 		"now":           time.Now().UnixMilli(),
 		"installations": out,
 		"hives":         hiveList,
-	})
+	}
 }
 
 // commandView exposes only the audit fields the dashboard shows.

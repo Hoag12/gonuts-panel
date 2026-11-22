@@ -386,13 +386,20 @@ func TestDashboardShellCarriesSessionCSRF(t *testing.T) {
 	if !strings.Contains(page, `<a class="brand" href="/dashboard"`) {
 		t.Fatal("dashboard logo does not link back to the dashboard")
 	}
-	if strings.Contains(page, "{{CSRF}}") {
-		t.Fatal("dashboard still contains the CSRF placeholder")
-	}
-	for _, want := range []string{"/assets/dashboard.css", "/assets/dashboard.js", "/assets/logo.png"} {
-		if !strings.Contains(page, want) {
-			t.Fatalf("dashboard does not link %s", want)
+	for _, placeholder := range []string{"{{CSRF}}", "{{CSS}}", "{{JSV}}", "{{STATE}}"} {
+		if strings.Contains(page, placeholder) {
+			t.Fatalf("dashboard still contains %s", placeholder)
 		}
+	}
+	// The stylesheet is inlined, the state is embedded, and the script URL is
+	// content-hashed so repeat loads can come from the cache.
+	for _, want := range []string{"<style>", "/assets/monocraft-subset.woff2", "/assets/dashboard.js?v=", "/assets/logo.png"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("dashboard does not contain %s", want)
+		}
+	}
+	if strings.Contains(page, `<link rel="stylesheet"`) {
+		t.Fatal("dashboard still blocks on an external stylesheet")
 	}
 	if strings.Contains(page, "Bug tracker") {
 		t.Fatal("dashboard still links the removed bug tracker")
@@ -872,21 +879,18 @@ func TestPanelGetMapsPathsAndCachesAssets(t *testing.T) {
 		t.Fatalf("icon not cached: status=%d frames=%d want %d", rec.Code, len(fr.frames), iconFrames)
 	}
 
-	if rec := f.get(f.base + "logo.png"); rec.Code != 200 {
-		t.Fatalf("logo status=%d", rec.Code)
+	// The logo and font come from the embedded copy, never the game socket.
+	before := len(fr.frames)
+	logoRec := f.get(f.base + "logo.png")
+	if logoRec.Code != 200 || logoRec.Header().Get("Content-Type") != "image/png" || logoRec.Body.Len() == 0 {
+		t.Fatalf("logo status=%d type=%q len=%d", logoRec.Code, logoRec.Header().Get("Content-Type"), logoRec.Body.Len())
 	}
-	logo := fr.frames[len(fr.frames)-1]
-	if logo["op"] != "asset" || logo["asset"] != "logo" {
-		t.Fatalf("logo frame=%+v", logo)
-	}
-
 	fontRec := f.get(f.base + "font.ttf")
-	if fontRec.Code != 200 || fontRec.Header().Get("Content-Type") != "font/ttf" {
-		t.Fatalf("font status=%d type=%q", fontRec.Code, fontRec.Header().Get("Content-Type"))
+	if fontRec.Code != 200 || fontRec.Header().Get("Content-Type") != "font/ttf" || fontRec.Body.Len() == 0 {
+		t.Fatalf("font status=%d type=%q len=%d", fontRec.Code, fontRec.Header().Get("Content-Type"), fontRec.Body.Len())
 	}
-	font := fr.frames[len(fr.frames)-1]
-	if font["op"] != "asset" || font["asset"] != "font" {
-		t.Fatalf("font frame=%+v", font)
+	if len(fr.frames) != before {
+		t.Fatalf("logo/font used the relay: frames=%d want %d", len(fr.frames), before)
 	}
 
 	for _, path := range []string{"nope", "api/Bots", "api/a/b", "api/", "item/bad%20item.png", "item/x.gif", "panel.png/"} {
@@ -929,14 +933,14 @@ func TestPanelImageIsNeverCached(t *testing.T) {
 		t.Fatalf("png bodies=%v / %v, want two distinct fresh frames", first.Body.Bytes(), second.Body.Bytes())
 	}
 
-	// The logo/font assets keep the asset cache: a repeat costs no frame.
+	// The font is embedded, so it costs no relay frame at all.
 	for i := 0; i < 2; i++ {
 		if rec := f.get(f.base + "font.ttf"); rec.Code != 200 {
 			t.Fatalf("font %d status=%d", i, rec.Code)
 		}
 	}
-	if len(fr.frames) != 3 {
-		t.Fatalf("font frames=%d, want one relay plus one cache hit", len(fr.frames))
+	if len(fr.frames) != 2 {
+		t.Fatalf("font frames=%d, want no extra relay frames", len(fr.frames))
 	}
 }
 
@@ -2739,18 +2743,18 @@ func TestLoginPageSignInModes(t *testing.T) {
 			name:    "local only",
 			cfg:     config.Config{LocalPasswordHash: hash},
 			want:    []string{`action="/auth/local"`, `type="password"`, `autocomplete="current-password"`, "Sign in"},
-			notWant: []string{"/auth/login", "No sign-in method configured", "login-divider", "{{"},
+			notWant: []string{"/auth/login", "No sign-in method configured", `class="login-divider"`, "{{"},
 		},
 		{
 			name:    "discord only",
 			cfg:     config.Config{DiscordEnabled: true},
 			want:    []string{`href="/auth/login"`, "Sign in with Discord"},
-			notWant: []string{`action="/auth/local"`, "No sign-in method configured", "login-divider", "{{"},
+			notWant: []string{`action="/auth/local"`, "No sign-in method configured", `class="login-divider"`, "{{"},
 		},
 		{
 			name:    "both",
 			cfg:     config.Config{DiscordEnabled: true, LocalPasswordHash: hash},
-			want:    []string{`action="/auth/local"`, `href="/auth/login"`, "login-divider"},
+			want:    []string{`action="/auth/local"`, `href="/auth/login"`, `class="login-divider"`},
 			notWant: []string{"No sign-in method configured", "{{"},
 		},
 		{
