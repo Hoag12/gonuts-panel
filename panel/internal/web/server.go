@@ -78,6 +78,11 @@ type Server struct {
 	PanelCache     *panelCache
 	// Swarm stores public market observations shared by linked hives.
 	Swarm *swarm.Hub
+	// prefetching tracks installations whose panel page is being fetched in
+	// the background, so repeated dashboard polls do not start duplicate
+	// relays.
+	prefetchMu  sync.Mutex
+	prefetching map[int64]bool
 }
 
 // New builds a Server. A nil hub is replaced by an offline no-op so auth and
@@ -86,7 +91,7 @@ func New(cfg config.Config, st *store.Store, hub Relay, d *auth.Discord) *Server
 	if hub == nil {
 		hub = noopRelay{}
 	}
-	return &Server{
+	s := &Server{
 		Cfg:            cfg,
 		Store:          st,
 		Hub:            hub,
@@ -99,7 +104,12 @@ func New(cfg config.Config, st *store.Store, hub Relay, d *auth.Discord) *Server
 		SSE:            newSSEHub(5),
 		PanelCache:     newPanelCache(cfg.PanelCacheBytes),
 		Swarm:          swarm.NewWithSecret(cfg.SwarmSecret),
+		prefetching:    map[int64]bool{},
 	}
+	if notifier, ok := hub.(interface{ SetOnConnect(func(int64)) }); ok {
+		notifier.SetOnConnect(s.prefetchPanel)
+	}
+	return s
 }
 
 // Handler returns the complete route table wrapped in the security middleware.

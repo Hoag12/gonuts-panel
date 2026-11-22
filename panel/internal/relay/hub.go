@@ -108,6 +108,11 @@ type Hub struct {
 	lifeMu  sync.Mutex
 	started bool
 	done    chan struct{}
+
+	// connectMu guards onConnect, an optional warm-up callback run once per
+	// authenticated socket after the hello handshake.
+	connectMu sync.Mutex
+	onConnect func(int64)
 }
 
 // client is one live socket for one installation. All writes are serialised
@@ -613,6 +618,12 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.sendJSON(Welcome(inst.ID, h.opts))
+	h.connectMu.Lock()
+	onConnect := h.onConnect
+	h.connectMu.Unlock()
+	if onConnect != nil {
+		go onConnect(inst.ID)
+	}
 
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(clientSilenceTimeout))
@@ -624,6 +635,15 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 		h.handleFrame(c, data)
 	}
 	h.dropClient(c)
+}
+
+// SetOnConnect registers fn to run once per authenticated client after the
+// hello handshake. The hub runs it in its own goroutine, so fn must not block
+// the socket. Call it before Start.
+func (h *Hub) SetOnConnect(fn func(int64)) {
+	h.connectMu.Lock()
+	h.onConnect = fn
+	h.connectMu.Unlock()
 }
 
 // Welcome builds the protocol-1 welcome frame from the hub's options. The

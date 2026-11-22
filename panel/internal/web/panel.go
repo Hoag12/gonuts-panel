@@ -21,10 +21,11 @@ import (
 
 const (
 	// panelPageTTL bounds how long a relayed page is reused. The mod's Page
-	// HTML only changes with its build, which is part of the cache key.
-	panelPageTTL = 10 * time.Minute
+	// HTML only changes with its build, which is part of the cache key, so a
+	// day only costs one relay per installed build.
+	panelPageTTL = 24 * time.Hour
 	// panelAssetTTL bounds how long relayed icons and assets are reused.
-	panelAssetTTL = 10 * time.Minute
+	panelAssetTTL = 24 * time.Hour
 	// panelFormBytes and panelQueryBytes match the mod's DashboardPanel limits.
 	panelFormBytes  = 64 << 10
 	panelQueryBytes = 64 << 10
@@ -208,6 +209,42 @@ func (s *Server) panelInstallation(w http.ResponseWriter, r *http.Request, owner
 	return inst, true
 }
 
+// prefetchPanel warms the relayed page cache in the background. Opening the
+// panel used to wait on a round trip to the game whenever the cache had
+// expired; a connected client now fills it as soon as it says hello, and a
+// dashboard poll refreshes it once the long TTL has passed.
+func (s *Server) prefetchPanel(id int64) {
+	inst, ok := s.Store.Installation(id)
+	if !ok {
+		return
+	}
+	key := fmt.Sprintf("%d|%s", inst.ID, inst.Build)
+	if _, ok := s.PanelCache.page(key); ok {
+		return
+	}
+	s.prefetchMu.Lock()
+	if s.prefetching[id] {
+		s.prefetchMu.Unlock()
+		return
+	}
+	s.prefetching[id] = true
+	s.prefetchMu.Unlock()
+	go func() {
+		defer func() {
+			s.prefetchMu.Lock()
+			delete(s.prefetching, id)
+			s.prefetchMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		res, err := s.Hub.PanelRequest(ctx, id, map[string]any{"op": "page"})
+		if err != nil || res == nil || res.Status != http.StatusOK {
+			return
+		}
+		s.PanelCache.putPage(key, string(res.Body), panelPageTTL)
+	}()
+}
+
 // panelPage serves the mod's own complete panel page.
 func (s *Server) panelPage(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.panelSession(r)
@@ -378,7 +415,7 @@ func (s *Server) panelData(w http.ResponseWriter, r *http.Request, id int64, fra
 func (s *Server) panelAsset(w http.ResponseWriter, r *http.Request, id int64, path string, frame map[string]any) {
 	key := fmt.Sprintf("%d|%s", id, path)
 	if cached, ok := s.PanelCache.asset(key); ok {
-		writePanelBody(w, cached.body, cached.contentType, "private, max-age=300")
+		writePanelBody(w, cached.body, cached.contentType, "private, max-age=86400")
 		return
 	}
 	s.panelBinary(w, r, id, frame, func(body []byte, contentType string) {
@@ -518,7 +555,7 @@ func (s *Server) panelBinary(w http.ResponseWriter, r *http.Request, id int64, f
 	if store != nil {
 		store(res.Body, contentType)
 	}
-	writePanelBody(w, res.Body, contentType, "private, max-age=300")
+	writePanelBody(w, res.Body, contentType, "private, max-age=86400")
 }
 
 // panelAct relays one panel action and answers 204, like the mod's own panel.

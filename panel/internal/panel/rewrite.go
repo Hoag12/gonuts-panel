@@ -57,15 +57,19 @@ const autoAccountScript = `<script>(function(){` +
 	`s.dispatchEvent(new Event('change'));return;}}}` +
 	`setInterval(pick,1200);})();</script>`
 
-// imageFallbackScript keeps the summary visible when the panel preview transfer
-// stalls. The panel page's preview path can leave its image pending on a busy
-// bot; /panel.png (and the relay's SVG fallback) still answers.
+// imageFallbackScript recovers the summary image once when the panel preview
+// path leaves it pending on a busy bot. It never polls: the old timer asked the
+// game for a full screenshot every 8 seconds even while the image was hidden
+// behind the text view, which flooded the socket and starved the bot.
 const imageFallbackScript = `<script>(function(){` +
-	`function image(){var s=document.getElementById('shot');if(!s||!s.hidden)return;` +
-	`var i=new Image();i.onload=function(){s.src=i.src;s.hidden=false;` +
+	`var tries=0;` +
+	`function shown(s){for(var n=s;n;n=n.parentElement){if(n.hidden)return false;}return true;}` +
+	`function image(){var s=document.getElementById('shot');if(!s||tries>=2||!shown(s))return;` +
+	`if(s.complete&&s.naturalWidth>0)return;tries++;` +
+	`var i=new Image();i.onload=function(){s.src=i.src;` +
 	`var t=document.getElementById('image-status');if(t)t.textContent='Summary loaded from the live panel.';};` +
 	`i.src='panel.png?t='+Date.now();}` +
-	`setInterval(image,8000);})();</script>`
+	`setTimeout(image,8000);setTimeout(image,16000);})();</script>`
 
 // pwaTags makes a relayed panel page installable and full-screen on its own,
 // so opening the panel URL directly on a phone also hides Safari's chrome.
@@ -86,7 +90,7 @@ const offlineBadgeScript = `<script>(function(){` +
 	`function mark(){var s=document.getElementById('state');if(!s)return;` +
 	`fetch('state',{cache:'no-store'}).then(function(r){if(!r.ok){s.textContent='OFFLINE';s.className='bad';}})` +
 	`.catch(function(){s.textContent='OFFLINE';s.className='bad';});}` +
-	`mark();setInterval(mark,5000);})();</script>`
+	`mark();setInterval(mark,15000);})();</script>`
 
 // Rewrite makes the panel page relative to its hosted URL, redirects its Lock
 // form to the dashboard, removes the retired notice, and injects the

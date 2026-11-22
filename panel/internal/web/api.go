@@ -158,12 +158,16 @@ func (s *Server) stateView(sess *store.Session, user *store.User) map[string]any
 		if inst.Hive != "" {
 			hives[inst.Hive]++
 		}
+		online := s.Hub.Online(inst.ID)
+		if online {
+			s.prefetchPanel(inst.ID)
+		}
 		out = append(out, map[string]any{
 			"id":          inst.ID,
 			"name":        inst.Name,
 			"build":       inst.Build,
 			"hive":        inst.Hive,
-			"online":      s.Hub.Online(inst.ID),
+			"online":      online,
 			"lastSeen":    inst.LastSeen,
 			"telemetry":   store.CloneTelemetry(inst.Telemetry),
 			"lastCommand": commandView(s.Store.LastCommand(inst.ID)),

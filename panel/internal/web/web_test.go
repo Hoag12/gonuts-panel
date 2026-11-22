@@ -611,6 +611,9 @@ func (f *fakeRelay) PanelRequest(ctx context.Context, id int64, frame map[string
 		return nil, relay.ErrOffline
 	}
 	f.frames = append(f.frames, frame)
+	if f.panel == nil {
+		return nil, relay.ErrOffline
+	}
 	return f.panel(ctx, id, frame)
 }
 
@@ -897,6 +900,31 @@ func TestPanelGetMapsPathsAndCachesAssets(t *testing.T) {
 		if rec := f.get(f.base + path); rec.Code != 404 {
 			t.Fatalf("%s status=%d body=%s", path, rec.Code, rec.Body)
 		}
+	}
+}
+
+func TestPanelPagePrefetchWarmsTheCache(t *testing.T) {
+	fr := &fakeRelay{online: true, updates: make(chan struct{}, 1), panel: pageRelay()}
+	f := newPanelFixture(t, fr)
+	key := fmt.Sprintf("%d|%s", f.inst.ID, f.inst.Build)
+
+	f.srv.prefetchPanel(f.inst.ID)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := f.srv.PanelCache.page(key); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("panel page was not prefetched")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	before := len(fr.frames)
+	if rec := f.get(f.base); rec.Code != 200 {
+		t.Fatalf("page status=%d", rec.Code)
+	}
+	if len(fr.frames) != before {
+		t.Fatalf("prefetched page was relayed again: frames=%d want %d", len(fr.frames), before)
 	}
 }
 
