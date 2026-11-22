@@ -83,6 +83,30 @@ const pwaTags = `<meta name="apple-mobile-web-app-capable" content="yes">` +
 	`<style>body{padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);` +
 	`padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);}</style>`
 
+// panelPaceScript wraps the mod page's picture() refresh so the hosted panel
+// asks the game for a full preview at most once a minute. The mod calls
+// picture() after every five-second status poll, and each call renders and
+// ships a whole screenshot over the relay; that is what made the hosted panel
+// crawl. The wrapper is injected before </body> so it runs after the page's own
+// script defines picture.
+const panelPaceScript = `<script>(function(){` +
+	`var last=0;` +
+	`function allowed(){var now=Date.now();if(now-last<60000)return false;last=now;return true;}` +
+	`function wrap(){var p=window.picture;if(typeof p!=='function'||p.__gonutsPaced)return false;` +
+	`var paced=function(){if(!allowed())return undefined;return p.apply(this,arguments);};` +
+	`paced.__gonutsPaced=true;window.picture=paced;return true;}` +
+	`if(!wrap()){var tries=0,t=setInterval(function(){if(wrap()||++tries>40)clearInterval(t);},100);}` +
+	`})();</script>`
+
+// injectTail appends tail before the closing body tag, or at the end when the
+// page has none, so a script can patch the page's own globals.
+func injectTail(page, tail string) string {
+	if i := indexFoldASCII(page, "</body>"); i >= 0 {
+		return page[:i] + tail + page[i:]
+	}
+	return page + tail
+}
+
 // offlineBadgeScript marks the panel's state badge OFFLINE while the client
 // cannot answer, so a cached page does not keep showing its last live state
 // after the game closes. A successful poll leaves the badge to the panel.
@@ -112,7 +136,7 @@ func Rewrite(page, csrf string) string {
 	} else {
 		page = inject + page
 	}
-	return page
+	return injectTail(page, panelPaceScript)
 }
 
 // indexFoldASCII finds sub in s, ignoring ASCII case. It returns a byte offset

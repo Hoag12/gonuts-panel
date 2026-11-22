@@ -447,7 +447,10 @@ func panelStatic(w http.ResponseWriter, name, contentType string) {
 // A slow/busy game used to leave the image area loading for 15 s and then show
 // an error; a relay-generated summary from the last telemetry is used instead.
 func (s *Server) panelImage(w http.ResponseWriter, r *http.Request, inst *store.Installation) {
-	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	// A busy game can leave the live image pending for a long time. The
+	// telemetry summary is ready instantly and is a better first frame than a
+	// blank area, so wait only briefly for the real screenshot.
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
 	res, err := s.Hub.PanelRequest(ctx, inst.ID, map[string]any{"op": "png"})
 	if err == nil && res != nil && res.Status == http.StatusOK {

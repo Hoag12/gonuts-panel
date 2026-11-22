@@ -63,6 +63,16 @@ func TestRewriteReplacesHostedTrackerURL(t *testing.T) {
 	}
 }
 
+func TestRewritePacesThePanelPictureRefresh(t *testing.T) {
+	in := `<html><body><script>async function picture(){}</script><p>x</p></body></html>`
+	out := Rewrite(in, "tok")
+	wrapped := strings.Index(out, `window.picture=paced`)
+	closing := strings.Index(out, `</body>`)
+	if wrapped < 0 || closing < 0 || wrapped > closing {
+		t.Fatalf("picture pacing is missing or runs before the panel script:\n%s", out)
+	}
+}
+
 func TestRewriteRemovesRetiredNoticeAndDefaultsToOwnAccount(t *testing.T) {
 	in := `<body><section class="panel" role="note"><strong>PUBLIC SUPPORT HAS ENDED</strong>` +
 		`<p>After seven weeks, GoNuts is no longer publicly maintained or supported.</p></section>` +
