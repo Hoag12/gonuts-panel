@@ -386,6 +386,9 @@ func TestDashboardShellCarriesSessionCSRF(t *testing.T) {
 	if !strings.Contains(page, `<a class="brand" href="/dashboard"`) {
 		t.Fatal("dashboard logo does not link back to the dashboard")
 	}
+	if !strings.Contains(page, `<h1><span>dashboard</span></h1>`) {
+		t.Fatal("dashboard heading must retain its label without duplicating the GoNuts logo text")
+	}
 	for _, placeholder := range []string{"{{CSRF}}", "{{CSS}}", "{{JSV}}", "{{STATE}}"} {
 		if strings.Contains(page, placeholder) {
 			t.Fatalf("dashboard still contains %s", placeholder)
