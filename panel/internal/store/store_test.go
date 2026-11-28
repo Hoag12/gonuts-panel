@@ -55,6 +55,44 @@ func TestStateSurvivesReload(t *testing.T) {
 	}
 }
 
+func TestLegacyStateWithoutAccountIDPreservesInstallationCredentials(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	inst := pair(t, s, "u1", now)
+	if err := s.SetTelemetry(inst.ID, &Telemetry{Account: "Account", State: "SCANNING"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveNow(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), `"accountId"`) {
+		t.Fatal("legacy fixture unexpectedly contains accountId")
+	}
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	got, ok := s2.Installation(inst.ID)
+	if !ok || got.ID != inst.ID || got.DiscordID != inst.DiscordID || got.CredentialHash != inst.CredentialHash {
+		t.Fatalf("installation identity or credential changed after upgrade: %+v", got)
+	}
+	if got.Telemetry == nil || got.Telemetry.Account != "Account" || got.Telemetry.AccountID != "" {
+		t.Fatalf("legacy telemetry was not preserved: %+v", got.Telemetry)
+	}
+}
+
 func TestCorruptStateIsRefused(t *testing.T) {
 	for _, content := range []string{"{", "", "null", "[]", `{"users":5}`, `{"sessions":{}} trailing`} {
 		dir := t.TempDir()
@@ -399,7 +437,8 @@ func TestTelemetryIsDirtyUntilSaved(t *testing.T) {
 	if err := s.SaveNow(); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetTelemetry(inst.ID, &Telemetry{Account: "Acc", State: "SCANNING"}, now); err != nil {
+	accountID := strings.Repeat("a", 64)
+	if err := s.SetTelemetry(inst.ID, &Telemetry{Account: "Acc", AccountID: accountID, State: "SCANNING"}, now); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "state.json")
@@ -410,7 +449,7 @@ func TestTelemetryIsDirtyUntilSaved(t *testing.T) {
 	if strings.Contains(string(b), "SCANNING") {
 		t.Fatal("SetTelemetry persisted eagerly")
 	}
-	if got, _ := s.Installation(inst.ID); got.Telemetry == nil || got.Telemetry.Account != "Acc" {
+	if got, _ := s.Installation(inst.ID); got.Telemetry == nil || got.Telemetry.Account != "Acc" || got.Telemetry.AccountID != accountID {
 		t.Fatal("telemetry not visible in memory")
 	}
 	if err := s.SaveNow(); err != nil {
@@ -425,7 +464,7 @@ func TestTelemetryIsDirtyUntilSaved(t *testing.T) {
 	}
 	defer s2.Close()
 	got, ok := s2.Installation(inst.ID)
-	if !ok || got.Telemetry == nil || got.Telemetry.Account != "Acc" || got.Telemetry.State != "SCANNING" {
+	if !ok || got.Telemetry == nil || got.Telemetry.Account != "Acc" || got.Telemetry.AccountID != accountID || got.Telemetry.State != "SCANNING" {
 		t.Fatalf("telemetry lost after reload: %+v", got)
 	}
 }

@@ -53,8 +53,8 @@ type swarmPayload struct {
 	You         *swarmYou `json:"you"`
 }
 
-// hiveAgg is one Discord account's hive: the newest telemetry per Minecraft
-// account, summed once the accounts are known.
+// hiveAgg is one Discord account's hive: the newest telemetry per stable
+// Minecraft account identity, summed once the accounts are known.
 type hiveAgg struct {
 	key      string
 	seen     int64
@@ -234,6 +234,14 @@ func computeSwarm(installs map[string]*store.Installation, you string, now time.
 		account := ""
 		if inst.Telemetry != nil {
 			account = inst.Telemetry.Account
+			if inst.Telemetry.AccountID != "" {
+				account = "id:" + inst.Telemetry.AccountID
+			} else if account == "Account" {
+				// Older clients cannot supply a pseudonymous id. The literal
+				// masked label is shared by every bot, so use the installation
+				// identity rather than silently collapsing distinct accounts.
+				account = ""
+			}
 		}
 		if account == "" {
 			account = fmt.Sprintf("#%d", inst.ID)

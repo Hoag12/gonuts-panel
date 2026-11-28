@@ -76,6 +76,7 @@ type Options struct {
 	MaxMessageBytes      int
 	PanelTimeout         time.Duration
 	MaxPanelInFlight     int
+	RankingSalt          string
 }
 
 // Hub owns the live client sockets. It implements the web layer's Relay
@@ -651,7 +652,7 @@ func (h *Hub) SetOnConnect(fn func(int64)) {
 // features stay off.
 func Welcome(id int64, opts Options) map[string]any {
 	opts = normalizeOptions(opts)
-	return map[string]any{
+	welcome := map[string]any{
 		"type":                   "welcome",
 		"protocol":               1,
 		"installationId":         id,
@@ -661,6 +662,10 @@ func Welcome(id int64, opts Options) map[string]any {
 		"panelTimeoutMs":         opts.PanelTimeout.Milliseconds(),
 		"commands":               append([]string{}, welcomeCommands...),
 	}
+	if opts.RankingSalt != "" {
+		welcome["rankingSalt"] = opts.RankingSalt
+	}
+	return welcome
 }
 
 // handleFrame dispatches one post-handshake frame. Malformed or refused

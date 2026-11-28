@@ -46,7 +46,7 @@ DSM 7.1.1 has no `systemctl enable --now`; run `enable` and `start` separately.
 | --- | --- |
 | `GONUTS_ADDR` | listen address, e.g. `0.0.0.0:8080` |
 | `GONUTS_PUBLIC_BASE_URL` | the origin clients and browsers use. It **must** match: it drives the CSRF `Origin`/`Referer` check and the WebSocket URL handed to the mod. |
-| `GONUTS_DATA_DIR` | where `state.json` lives |
+| `GONUTS_DATA_DIR` | where `state.json` and the persistent `swarm.key` live |
 | `GONUTS_AUTH_DISABLED=1` | no sign-in — loopback only unless `GONUTS_ALLOW_UNAUTH_LAN=1` is also set. Only for a trusted LAN. |
 | `GONUTS_ALLOW_UNAUTH_LAN=1` | allow the above from the LAN |
 | `GONUTS_COOKIE_SECURE` | `0` for plain `http://`, `1` behind HTTPS |
@@ -56,13 +56,20 @@ DSM 7.1.1 has no `systemctl enable --now`; run `enable` and `start` separately.
 | `GONUTS_DEV_LOGIN=1` | loopback development sign-in |
 | `GONUTS_DISCORD_CLIENT_ID` / `_SECRET` | Discord OAuth instead of a local password; redirect must be `${GONUTS_PUBLIC_BASE_URL}/auth/callback` |
 
-Back up before you change anything:
+Back up before an upgrade or configuration change. Copy the whole data
+directory, not just `state.json`: `swarm.key` must be retained or credential
+signing and stable account IDs change.
 
 ```bash
 cd /opt/gonuts-panel
 cp panel.env panel.env.bak-$(date +%Y%m%d-%H%M%S)
-cp data/state.json data/state.json.bak-$(date +%Y%m%d-%H%M%S)
+cp -a data data.bak-$(date +%Y%m%d-%H%M%S)
 ```
+
+Keep the same `GONUTS_DATA_DIR` (or Docker `./data:/data` mount) across the
+upgrade. Do not delete the data directory, recreate the container with an empty
+mount, or run `docker compose down -v`. If using systemd, stop the service
+before copying the backup.
 
 ## 2. Install the mod
 
@@ -195,6 +202,7 @@ Remember the other ceiling: GitHub Free includes 120 core-hours per month, so tw
   Tailscale only.
 - Never commit or copy `state.json`, `panel.env`, `account.json`, or
   `installation.json` anywhere.
-- Back up `panel.env` and `data/state.json` before editing them.
+- Back up `panel.env` and the whole data directory (including `state.json` and
+  `swarm.key`) before editing or upgrading.
 - Do not kill a running Minecraft client without the operator's approval, and never
   paste `jcmd -l` output — it contains access tokens.

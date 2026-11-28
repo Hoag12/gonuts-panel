@@ -1,6 +1,9 @@
 package web
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +20,52 @@ func mkInst(id int64, discordID, account string, seen time.Time, bank, p1, p24, 
 	t.Revenue = iv(r1, r24)
 	t.Sales = iv(s1, s24)
 	return &store.Installation{ID: id, DiscordID: discordID, Name: account, LastSeen: seen.UnixMilli(), Telemetry: t, Online: true}
+}
+
+func maskedInstallation(t *testing.T, id int64, discordID, accountID string, seen time.Time, bank int64) *store.Installation {
+	t.Helper()
+	raw := fmt.Sprintf(`{"at":%d,"account":"Account","accountId":%q,"bank":%d}`, seen.UnixMilli(), accountID, bank)
+	var telemetry store.Telemetry
+	if err := json.Unmarshal([]byte(raw), &telemetry); err != nil {
+		t.Fatal(err)
+	}
+	return &store.Installation{ID: id, DiscordID: discordID, Name: "Bot", LastSeen: seen.UnixMilli(), Telemetry: &telemetry, Online: true}
+}
+
+func TestComputeSwarmCountsMaskedAccountsByPseudonymousId(t *testing.T) {
+	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	recent := now.Add(-time.Minute)
+	installs := map[string]*store.Installation{
+		"1": maskedInstallation(t, 1, "A", strings.Repeat("a", 64), recent, 100),
+		"2": maskedInstallation(t, 2, "A", strings.Repeat("b", 64), recent, 200),
+		"3": maskedInstallation(t, 3, "A", strings.Repeat("c", 64), recent, 300),
+		"4": maskedInstallation(t, 4, "B", strings.Repeat("d", 64), recent, 400),
+	}
+	got := computeSwarm(installs, "A", now)
+	if got.Hives != 2 || got.Bots != 4 {
+		t.Fatalf("hives/bots = %d/%d, want 2/4 for three masked accounts in A and one in B", got.Hives, got.Bots)
+	}
+	if got.You == nil || got.You.Bank == nil || *got.You.Bank != 600 {
+		t.Fatalf("own-hive bank = %+v, want all three masked accounts summed to 600", got.You)
+	}
+}
+
+func TestComputeSwarmDoesNotCollapseLegacyMaskedAccounts(t *testing.T) {
+	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	recent := now.Add(-time.Minute)
+	installs := map[string]*store.Installation{
+		"1": mkInst(1, "A", "Account", recent, 100, 1, 10, 1, 10, 1, 1),
+		"2": mkInst(2, "A", "Account", recent, 200, 2, 20, 2, 20, 2, 2),
+		"3": mkInst(3, "A", "Account", recent, 300, 3, 30, 3, 30, 3, 3),
+		"4": mkInst(4, "B", "Account", recent, 400, 4, 40, 4, 40, 4, 4),
+	}
+	got := computeSwarm(installs, "A", now)
+	if got.Hives != 2 || got.Bots != 4 {
+		t.Fatalf("hives/bots = %d/%d, want 2/4 when legacy clients all use the masked label", got.Hives, got.Bots)
+	}
+	if got.You == nil || got.You.Bank == nil || *got.You.Bank != 600 {
+		t.Fatalf("own-hive bank = %+v, want all three legacy masked installations summed to 600", got.You)
+	}
 }
 
 func TestComputeSwarmRanksAndScore(t *testing.T) {

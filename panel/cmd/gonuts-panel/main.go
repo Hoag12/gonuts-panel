@@ -51,8 +51,7 @@ func main() {
 	if cfg.RemoteStateURL != "" {
 		sink, sinkErr := store.NewPostgresSink(cfg.RemoteStateURL)
 		if sinkErr != nil {
-			log.Printf("remote state unavailable, using local disk only: %v", sinkErr)
-			st, err = store.Open(cfg.DataDir)
+			log.Fatal("configured remote state unavailable; refusing to start with divergent local state")
 		} else {
 			st, err = store.OpenWithSink(cfg.DataDir, sink)
 		}
@@ -73,6 +72,7 @@ func main() {
 		MaxMessageBytes:      32768,
 		PanelTimeout:         15 * time.Second,
 		MaxPanelInFlight:     8,
+		RankingSalt:          cfg.RankingSalt,
 	})
 	go hub.Start(ctx)
 	defer hub.Stop()

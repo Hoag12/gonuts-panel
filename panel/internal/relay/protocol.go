@@ -73,9 +73,10 @@ var (
 	sensitiveFragments = []string{`C:\`, "/home/", "/Users/", "gni1_", "dbay_", "Bearer "}
 	longTokenPattern   = regexp.MustCompile(`[A-Za-z0-9+/=_-]{40,}`)
 
-	namePattern  = regexp.MustCompile(`^[A-Za-z0-9 _().-]{1,48}$`)
-	buildPattern = regexp.MustCompile(`^[0-9A-Za-z.+_-]{0,60}$`)
-	hivePattern  = regexp.MustCompile(`^[0-9A-Za-z_-]{0,64}$`)
+	namePattern      = regexp.MustCompile(`^[A-Za-z0-9 _().-]{1,48}$`)
+	buildPattern     = regexp.MustCompile(`^[0-9A-Za-z.+_-]{0,60}$`)
+	hivePattern      = regexp.MustCompile(`^[0-9A-Za-z_-]{0,64}$`)
+	accountIDPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 	// Capabilities are advisory. The real client advertises a longer list than
 	// this relay consults (only "panel" is read), so the shape and count are
@@ -119,6 +120,17 @@ func ParseTelemetry(raw []byte) (*store.Telemetry, error) {
 		return nil, err
 	}
 	t.Account = truncate(account, maxAccountLen)
+
+	accountID, _, err := stringValue(fields, "accountId")
+	if err != nil {
+		return nil, err
+	}
+	if accountID != "" {
+		if !accountIDPattern.MatchString(accountID) {
+			return nil, errInvalidTelemetry
+		}
+		t.AccountID = accountID
+	}
 
 	detail, _, err := stringValue(fields, "detail")
 	if err != nil {

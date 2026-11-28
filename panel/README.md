@@ -21,7 +21,8 @@ SIL Open Font License (`web/assets/Monocraft-OFL.txt`).
 
 - Go 1.27 (only for building/running natively; the container carries its own).
 - A Discord application (see below), a local password, or `GONUTS_DEV_LOGIN=1`.
-- No database: state lives in `GONUTS_DATA_DIR/state.json` (mode 0600).
+- No database: state lives in `GONUTS_DATA_DIR/state.json` (mode 0600), alongside
+  the persistent `swarm.key`.
 
 ## Run in a GitHub Codespace
 
@@ -234,16 +235,21 @@ WantedBy=multi-user.target
 ## Operating it
 
 - **State and backup.** `data/state.json` holds users, sessions, installations,
-  pairing codes, and the last telemetry. Back it up before upgrades; it is
-  written atomically with mode 0600. `dist/` and `data/` are ignored by git —
-  never commit them either.
+  pairing codes, and the last telemetry. `data/swarm.key` is generated once and
+  signs credentials; retaining it also keeps account IDs stable. Back up the
+  whole `data/` directory before upgrades, stop the service first for a
+  consistent copy, and keep the files private (0600). `dist/` and `data/` are
+  ignored by git — never commit them either.
 - **Memory.** The container is limited to 256 MB; watch `docker stats`. The
   relayed-page cache is bounded by `GONUTS_PANEL_CACHE_BYTES` (default 16 MiB)
   and per-installation buffers are fixed, so memory does not grow with use.
 - **Logs.** `docker logs gonuts-panel` (or the DSM task log). The panel never
   logs request bodies, cookies, pairing codes, or Discord secrets.
-- **Upgrades.** Rebuild the image (or replace the binary), restart, and keep the
-  `data/` directory. Sessions in `state.json` survive a restart.
+- **Upgrades.** Back up `panel.env` and the whole `data/` directory, rebuild the
+  image (or replace the binary), and restart with the same data directory or
+  Docker volume. Sessions in `state.json` survive a restart. Never use
+  `docker compose down -v` or prune volumes as part of an upgrade; deleting
+  `swarm.key` changes credential signing and stable account IDs.
 - **Tests.** From `panel/`: `../.tools/go/bin/go vet ./...` and
   `../.tools/go/bin/go test ./... -count=1`. The race detector needs cgo and a
   C toolchain, so run it on the Codespace or another Linux host from the

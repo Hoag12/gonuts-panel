@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,34 @@ func TestParseTelemetryClampsAndRefusesSecrets(t *testing.T) {
 	bad := []byte(`{"type":"telemetry","detail":"token gni1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"}`)
 	if _, err := ParseTelemetry(bad); err == nil {
 		t.Fatal("credential-looking detail accepted")
+	}
+}
+
+func TestParseTelemetryPreservesPseudonymousAccountId(t *testing.T) {
+	accountID := strings.Repeat("a", 64)
+	tel, err := ParseTelemetry([]byte(`{"account":"Account","accountId":"` + accountID + `"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(tel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(wire, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["accountId"] != accountID {
+		t.Fatalf("accountId was not preserved: %s", wire)
+	}
+}
+
+func TestParseTelemetryRejectsInvalidPseudonymousAccountId(t *testing.T) {
+	for _, accountID := range []string{"Account", strings.Repeat("a", 63), strings.Repeat("a", 65), strings.Repeat("G", 64)} {
+		raw := []byte(`{"accountId":"` + accountID + `"}`)
+		if _, err := ParseTelemetry(raw); err == nil {
+			t.Fatalf("invalid accountId accepted: %q", accountID)
+		}
 	}
 }
 
@@ -202,7 +231,8 @@ func TestWSHandshakeTelemetryAndPresence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	h := NewHub(st, Options{HeartbeatSeconds: 20, MaxMessageBytes: 32768, MaxPanelInFlight: 8})
+	rankingSalt := strings.Repeat("r", 43)
+	h := NewHub(st, Options{HeartbeatSeconds: 20, MaxMessageBytes: 32768, MaxPanelInFlight: 8, RankingSalt: rankingSalt})
 	go h.Start(context.Background())
 	defer h.Stop()
 	ts := httptest.NewServer(http.HandlerFunc(h.ServeWS))
@@ -229,10 +259,11 @@ func TestWSHandshakeTelemetryAndPresence(t *testing.T) {
 	if err := conn.ReadJSON(&welcome); err != nil {
 		t.Fatal(err)
 	}
-	if welcome["type"] != "welcome" {
+	if welcome["type"] != "welcome" || welcome["rankingSalt"] != rankingSalt {
 		t.Fatalf("welcome=%v", welcome)
 	}
-	if err := conn.WriteJSON(map[string]any{"type": "telemetry", "at": time.Now().UnixMilli(), "state": "SCANNING", "account": "Acc", "listed": 1, "slots": 18}); err != nil {
+	accountID := strings.Repeat("a", 64)
+	if err := conn.WriteJSON(map[string]any{"type": "telemetry", "at": time.Now().UnixMilli(), "state": "SCANNING", "account": "Account", "accountId": accountID, "listed": 1, "slots": 18}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -240,7 +271,7 @@ func TestWSHandshakeTelemetryAndPresence(t *testing.T) {
 		t.Fatal("not online")
 	}
 	got, ok := st.Installation(inst.ID)
-	if !ok || got.Telemetry == nil || got.Telemetry.Account != "Acc" {
+	if !ok || got.Telemetry == nil || got.Telemetry.Account != "Account" || got.Telemetry.AccountID != accountID {
 		t.Fatalf("telemetry=%+v", got)
 	}
 }
@@ -604,11 +635,12 @@ func TestWelcomeUsesHubOptions(t *testing.T) {
 		TelemetryMinInterval: 1500 * time.Millisecond,
 		MaxMessageBytes:      4096,
 		PanelTimeout:         3 * time.Second,
+		RankingSalt:          strings.Repeat("x", 43),
 	}
 	w := Welcome(9, opts)
 	if w["installationId"] != int64(9) || w["heartbeatSeconds"] != 7 ||
 		w["telemetryMinIntervalMs"] != int64(1500) || w["maxMessageBytes"] != 4096 ||
-		w["panelTimeoutMs"] != int64(3000) {
+		w["panelTimeoutMs"] != int64(3000) || w["rankingSalt"] != opts.RankingSalt {
 		t.Fatalf("welcome=%v", w)
 	}
 	// Zero options fall back to the contract defaults rather than advertising 0.

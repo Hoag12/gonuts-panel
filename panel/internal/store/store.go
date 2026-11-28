@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -92,6 +93,7 @@ type Telemetry struct {
 	State        string    `json:"state"`
 	Detail       string    `json:"detail"`
 	Account      string    `json:"account"`
+	AccountID    string    `json:"accountId,omitempty"`
 	Listed       int64     `json:"listed"`
 	Slots        int64     `json:"slots"`
 	Bank         *int64    `json:"bank,omitempty"`
@@ -200,10 +202,24 @@ func open(dir string, sink Sink) (*Store, error) {
 	s := &Store{dir: dir, path: filepath.Join(dir, stateFileName), sink: sink}
 	loadedRemote := false
 	if sink != nil {
-		s.startMirror()
-		if body, ok, err := sink.LoadState(); err == nil && ok {
+		body, ok, loadErr := sink.LoadState()
+		if loadErr != nil {
+			_ = sink.Close()
+			return nil, fmt.Errorf("restore remote state: %w", loadErr)
+		}
+		if ok {
 			var remote State
-			if json.Unmarshal(body, &remote) == nil {
+			trimmed := bytes.TrimSpace(body)
+			if len(trimmed) == 0 || trimmed[0] != '{' {
+				_ = sink.Close()
+				return nil, errors.New("remote state is corrupt: expected JSON object")
+			}
+			if err := json.Unmarshal(body, &remote); err != nil {
+				_ = sink.Close()
+				return nil, fmt.Errorf("remote state is corrupt: %w", err)
+			}
+			s.startMirror()
+			{
 				remote.ensure()
 				s.data = remote
 				if s.data.prune(time.Now()) {
@@ -216,6 +232,7 @@ func open(dir string, sink Sink) (*Store, error) {
 				return s, nil
 			}
 		}
+		s.startMirror()
 	}
 	b, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -254,7 +271,9 @@ func (s *Store) startMirror() {
 	go func() {
 		defer close(s.mirrorDone)
 		for body := range s.mirrorCh {
-			_ = s.sink.SaveState(body)
+			if err := s.sink.SaveState(body); err != nil {
+				log.Print("remote state save failed; local snapshot retained")
+			}
 		}
 	}()
 }

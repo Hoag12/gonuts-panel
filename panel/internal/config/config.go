@@ -1,11 +1,16 @@
 package config
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -47,6 +52,10 @@ type Config struct {
 	// SwarmSecret signs stateless community credentials so enrollments
 	// survive restarts without storage.
 	SwarmSecret []byte
+	// RankingSalt is a domain-separated derivation of SwarmSecret. It lets
+	// clients create stable pseudonymous account ids without exposing the
+	// credential-signing key.
+	RankingSalt string
 	// HideLocalLogin keeps the local password endpoint available for
 	// automation (the bridge signs in with it) while the login page offers
 	// only Discord.
@@ -109,8 +118,36 @@ func Load() (Config, error) {
 	if n, err := strconv.ParseInt(os.Getenv("GONUTS_PANEL_CACHE_BYTES"), 10, 64); err == nil && n > 0 {
 		cfg.PanelCacheBytes = n
 	}
-	sum := sha256.Sum256([]byte("gonuts-swarm|" + base + "|" + cfg.LocalPassword + "|" + cfg.LocalPasswordHash))
-	cfg.SwarmSecret = sum[:]
+	keyPath := filepath.Join(cfg.DataDir, "swarm.key")
+	key, keyErr := os.ReadFile(keyPath)
+	if errors.Is(keyErr, os.ErrNotExist) {
+		if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
+			return Config{}, err
+		}
+		key = make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return Config{}, err
+		}
+		file, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return Config{}, err
+		}
+		_, writeErr := file.Write(key)
+		closeErr := file.Close()
+		if writeErr != nil {
+			return Config{}, writeErr
+		}
+		if closeErr != nil {
+			return Config{}, closeErr
+		}
+	} else if keyErr != nil {
+		return Config{}, keyErr
+	}
+	if len(key) != 32 {
+		return Config{}, fmt.Errorf("invalid swarm signing key length")
+	}
+	cfg.SwarmSecret = key
+	cfg.RankingSalt = rankingSalt(key)
 	cfg.CookieSecure = boolEnv("GONUTS_COOKIE_SECURE", strings.HasPrefix(base, "https://"))
 	cfg.HideLocalLogin = boolEnv("GONUTS_HIDE_LOCAL_LOGIN", false)
 	if cfg.DevLogin && !IsLoopbackBaseURL(base) {
@@ -135,6 +172,18 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("Discord client id/secret or GONUTS_LOCAL_PASSWORD_HASH/GONUTS_LOCAL_PASSWORD are required unless GONUTS_DEV_LOGIN=1 or GONUTS_AUTH_DISABLED=1")
 	}
 	return cfg, nil
+}
+
+// rankingSalt derives a stable, public-safe account-id salt without exposing
+// the secret used to sign community credentials. The domain separator keeps
+// the two uses independent if the derivation is ever changed.
+func rankingSalt(secret []byte) string {
+	if len(secret) == 0 {
+		return ""
+	}
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write([]byte("gonuts-panel|ranking-account-id|v1"))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // LocalAuthEnabled reports whether a local password or hash can sign a browser

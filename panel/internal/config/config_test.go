@@ -1,6 +1,63 @@
 package config
 
-import "testing"
+import (
+	"bytes"
+	"encoding/base64"
+	"strings"
+	"testing"
+)
+
+func TestSwarmSecretIsPrivateAndPersistent(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("GONUTS_DATA_DIR", t.TempDir())
+	t.Setenv("GONUTS_DISCORD_CLIENT_ID", "client")
+	t.Setenv("GONUTS_DISCORD_CLIENT_SECRET", "secret")
+	first, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GONUTS_PUBLIC_BASE_URL", "https://another.example.com")
+	second, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.SwarmSecret) != 32 || !bytes.Equal(first.SwarmSecret, second.SwarmSecret) {
+		t.Fatal("signing key must remain private and stable when the public origin changes")
+	}
+}
+
+func TestRankingSaltIsStableAndDomainSeparated(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("GONUTS_DATA_DIR", t.TempDir())
+	t.Setenv("GONUTS_DISCORD_CLIENT_ID", "client")
+	t.Setenv("GONUTS_DISCORD_CLIENT_SECRET", "secret")
+	first, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GONUTS_PUBLIC_BASE_URL", "https://another.example.com")
+	second, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.RankingSalt == "" || len(first.RankingSalt) != 43 || strings.ContainsAny(first.RankingSalt, "+/=") {
+		t.Fatalf("ranking salt must be a nonempty base64url value: %q", first.RankingSalt)
+	}
+	if first.RankingSalt != second.RankingSalt {
+		t.Fatal("ranking salt must remain stable across restarts and origin changes")
+	}
+	if strings.Contains(first.RankingSalt, base64.RawURLEncoding.EncodeToString(first.SwarmSecret)) {
+		t.Fatal("ranking salt must not expose the raw signing secret")
+	}
+	t.Setenv("GONUTS_DATA_DIR", t.TempDir())
+	third, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.RankingSalt == first.RankingSalt {
+		t.Fatal("different signing secrets must produce different ranking salts")
+	}
+}
 
 // clearAuthEnv removes every sign-in variable from the test environment so a
 // case only sees what it sets. t.Setenv("") reads as unset for os.Getenv.
