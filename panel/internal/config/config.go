@@ -2,7 +2,6 @@ package config
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -124,10 +123,11 @@ func Load() (Config, error) {
 		if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 			return Config{}, err
 		}
-		key = make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
-			return Config{}, err
-		}
+		// Seed the persistent key with the derivation used before swarm.key
+		// existed. Existing community credentials keep validating on upgrade;
+		// later restarts read this file instead of deriving a new secret.
+		legacy := sha256.Sum256([]byte("gonuts-swarm|" + base + "|" + cfg.LocalPassword + "|" + cfg.LocalPasswordHash))
+		key = append([]byte(nil), legacy[:]...)
 		file, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			return Config{}, err

@@ -2,7 +2,10 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -23,6 +26,34 @@ func TestSwarmSecretIsPrivateAndPersistent(t *testing.T) {
 	}
 	if len(first.SwarmSecret) != 32 || !bytes.Equal(first.SwarmSecret, second.SwarmSecret) {
 		t.Fatal("signing key must remain private and stable when the public origin changes")
+	}
+}
+
+func TestSwarmSecretMigratesLegacyDerivation(t *testing.T) {
+	clearAuthEnv(t)
+	dir := t.TempDir()
+	const base = "https://panel.example.com"
+	const password = "correct horse"
+	const passwordHash = "pbkdf2-sha256$600000$c2FsdA$a2V5"
+	t.Setenv("GONUTS_DATA_DIR", dir)
+	t.Setenv("GONUTS_PUBLIC_BASE_URL", base)
+	t.Setenv("GONUTS_LOCAL_PASSWORD", password)
+	t.Setenv("GONUTS_LOCAL_PASSWORD_HASH", passwordHash)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := sha256.Sum256([]byte("gonuts-swarm|" + base + "|" + password + "|" + passwordHash))
+	if !bytes.Equal(cfg.SwarmSecret, legacy[:]) {
+		t.Fatal("first startup replaced the legacy credential-signing secret")
+	}
+	persisted, err := os.ReadFile(filepath.Join(dir, "swarm.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(persisted, legacy[:]) {
+		t.Fatal("legacy credential-signing secret was not persisted for future restarts")
 	}
 }
 

@@ -236,8 +236,10 @@ WantedBy=multi-user.target
 
 - **State and backup.** `data/state.json` holds users, sessions, installations,
   pairing codes, and the last telemetry. `data/swarm.key` is generated once and
-  signs credentials; retaining it also keeps account IDs stable. Back up the
-  whole `data/` directory before upgrades, stop the service first for a
+  signs credentials; retaining it also keeps account IDs stable. On the first
+  start after upgrading from a version without this file, it is seeded from the
+  previous derivation so existing community credentials remain valid. Back up
+  the whole `data/` directory before upgrades, stop the service first for a
   consistent copy, and keep the files private (0600). `dist/` and `data/` are
   ignored by git — never commit them either.
 - **Memory.** The container is limited to 256 MB; watch `docker stats`. The
